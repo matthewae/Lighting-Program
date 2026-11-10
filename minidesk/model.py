@@ -171,6 +171,16 @@ EFFECT_TYPES = {
     "tilt_step": ("Tilt step", "Position"),
     "ballyhoo": ("Ballyhoo", "Position"),
     "pos_random": ("Random position", "Position"),
+    "infinity": ("Infinity ∞", "Position"),
+    "heart": ("Heart", "Position"),
+    "rose": ("Flower (4 petals)", "Position"),
+    "lissajous": ("Lissajous 3:2", "Position"),
+    "zigzag": ("Zig-zag", "Position"),
+    "fan": ("Fan in / out", "Position"),
+    "pendulum": ("Pendulum", "Position"),
+    "nod": ("Tilt nod", "Position"),
+    "sweep": ("Sweep (pan + tilt drop)", "Position"),
+    "jump": ("Random jump", "Position"),
     # Intensity (dimmer)
     "dim_sine": ("Dimmer sine", "Intensity"),
     "dim_saw": ("Dimmer saw (ramp up)", "Intensity"),
@@ -182,12 +192,29 @@ EFFECT_TYPES = {
     "sparkle": ("Sparkle", "Intensity"),
     "strobe": ("Strobe", "Intensity"),
     "strobe_random": ("Random strobe", "Intensity"),
+    "breathe": ("Breathe", "Intensity"),
+    "heartbeat": ("Heartbeat", "Intensity"),
+    "flash_decay": ("Flash + decay", "Intensity"),
+    "bounce": ("Bounce chase", "Intensity"),
+    "scanner": ("Scanner (knight rider)", "Intensity"),
+    "build": ("Build up", "Intensity"),
+    "lightning": ("Lightning", "Intensity"),
+    "flicker": ("Fire flicker", "Intensity"),
+    "candle": ("Candle", "Intensity"),
+    "odd_even": ("Odd / even", "Intensity"),
     # Colour
     "rainbow": ("Rainbow", "Color"),
     "color_chase": ("Colour chase A/B", "Color"),
     "color_fade": ("Colour fade A↔B", "Color"),
     "rgb_step": ("RGB step (R-G-B-W)", "Color"),
     "color_random": ("Random colour", "Color"),
+    "color_wave": ("Colour wave (hue spread)", "Color"),
+    "color3": ("3-colour chase", "Color"),
+    "fire": ("Fire", "Color"),
+    "ocean": ("Ocean", "Color"),
+    "police": ("Police", "Color"),
+    "pastel": ("Pastel rainbow", "Color"),
+    "color_strobe": ("Colour flash", "Color"),
     # Beam
     "gobo_step": ("Gobo step", "Beam"),
     "zoom_wave": ("Zoom wave", "Beam"),
@@ -195,6 +222,10 @@ EFFECT_TYPES = {
     "iris_wave": ("Iris wave", "Beam"),
     "prism_flash": ("Prism on/off", "Beam"),
     "frost_wave": ("Frost wave", "Beam"),
+    "zoom_bump": ("Zoom bump", "Beam"),
+    "iris_pulse": ("Iris pulse", "Beam"),
+    "gobo_shake": ("Gobo shake", "Beam"),
+    "prism_spin": ("Prism spin", "Beam"),
 }
 
 
@@ -214,10 +245,13 @@ class Effect:
     offset: float = 0.0           # phase offset of the whole effect (degrees)
     duty: float = 0.5             # on-time fraction for chase / strobe (0..1)
     fade: float = 0.0             # seconds to ramp the effect in when it starts
+    order: str = "forward"        # forward | backward | center_out | outside_in | odd_even | random
+    blocks: int = 1               # fixtures that move together
+    color_c: tuple = (0, 255, 0)  # third colour (3-colour chase)
 
     def to_json(self) -> dict:
         d = asdict(self)
-        d["color_a"], d["color_b"] = list(self.color_a), list(self.color_b)
+        d["color_a"], d["color_b"], d["color_c"] = list(self.color_a), list(self.color_b), list(self.color_c)
         return d
 
     @staticmethod
@@ -225,6 +259,7 @@ class Effect:
         d = dict(d)
         d["color_a"] = tuple(d.get("color_a", (255, 0, 0)))
         d["color_b"] = tuple(d.get("color_b", (0, 0, 255)))
+        d["color_c"] = tuple(d.get("color_c", (0, 255, 0)))
         return Effect(**{k: v for k, v in d.items() if k in Effect.__dataclass_fields__})
 
 

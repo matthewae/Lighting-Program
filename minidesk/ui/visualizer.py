@@ -54,6 +54,7 @@ class StageView(QWidget):
     fixtureClicked = Signal(int, bool)       # fid (-1 = clear), additive
     fixtureMoved = Signal(int)
     layoutEdited = Signal()
+    modeChanged = Signal(str)
 
     def __init__(self, show: Show, dmx_source: Callable[[], dict[int, bytes]], parent=None):
         super().__init__(parent)
@@ -77,6 +78,70 @@ class StageView(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update)
         self.timer.start(45)
+        self._overlay()
+
+    def _overlay(self) -> None:
+        """Floating view buttons in the top-left corner of the stage."""
+        from PySide6.QtWidgets import QHBoxLayout, QToolButton, QWidget as _W
+        from .icons import icon
+        self.ov = _W(self)
+        self.ov.setObjectName("overlay")
+        h = QHBoxLayout(self.ov)
+        h.setContentsMargins(6, 4, 6, 4)
+        h.setSpacing(4)
+        self.ov_btn = {}
+        for key, ic, tip in (("3d", "cube", "3D view (F5)"), ("top", "top", "Top view – edit X/Y (F6)"),
+                             ("front", "front", "Front view – edit X/height (F7)")):
+            b = QToolButton()
+            b.setIcon(icon(ic))
+            b.setCheckable(True)
+            b.setToolTip(tip)
+            b.setText({"3d": "3D", "top": "Top", "front": "Front"}[key])
+            b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            b.clicked.connect(lambda _=False, k=key: self.set_mode(k))
+            h.addWidget(b)
+            self.ov_btn[key] = b
+        rb = QToolButton()
+        rb.setIcon(icon("reset"))
+        rb.setToolTip("Reset camera")
+        rb.clicked.connect(self.reset_camera)
+        h.addWidget(rb)
+        for txt, attr in (("Models", "show_models"), ("Labels", "show_labels")):
+            b = QToolButton()
+            b.setText(txt)
+            b.setCheckable(True)
+            b.setChecked(getattr(self, attr))
+            b.toggled.connect(lambda v, a=attr: (setattr(self, a, v), self.update()))
+            h.addWidget(b)
+            self.ov_btn[attr] = b
+        self.ov.adjustSize()
+        self.ov.move(8, 8)
+        self._sync_overlay()
+
+    def resizeEvent(self, e):
+        if hasattr(self, "ov"):
+            for b in self.ov.findChildren(type(self.ov_btn["3d"])):
+                b.setMinimumWidth(b.sizeHint().width())
+            self.ov.adjustSize()
+        super().resizeEvent(e)
+
+    def showEvent(self, e):
+        if hasattr(self, "ov"):
+            for b in self.ov.findChildren(type(self.ov_btn["3d"])):
+                b.ensurePolished()
+                b.setMinimumWidth(b.sizeHint().width())
+            self.ov.adjustSize()
+        super().showEvent(e)
+
+    def _sync_overlay(self) -> None:
+        if hasattr(self, "ov_btn"):
+            for k in ("3d", "top", "front"):
+                self.ov_btn[k].setChecked(self.mode == k)
+            for a in ("show_models", "show_labels"):
+                b = self.ov_btn[a]
+                b.blockSignals(True)
+                b.setChecked(getattr(self, a))
+                b.blockSignals(False)
 
     def set_show(self, show: Show) -> None:
         self.show = show
@@ -805,11 +870,12 @@ class StageView(QWidget):
 
     def set_mode(self, mode: str) -> None:
         self.mode = mode
+        self._sync_overlay()
+        self.modeChanged.emit(mode)
         self.update()
 
     def toggle_mode(self) -> None:
-        self.mode = {"3d": "top", "top": "front", "front": "3d"}[self.mode]
-        self.update()
+        self.set_mode({"3d": "top", "top": "front", "front": "3d"}[self.mode])
 
     def reset_camera(self) -> None:
         self.yaw, self.pitch, self.dist = 0.0, 0.30, 16.0

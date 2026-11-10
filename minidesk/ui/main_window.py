@@ -4,12 +4,12 @@ from __future__ import annotations
 import os
 import traceback
 
-from PySide6.QtCore import QObject, QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QSettings, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QMainWindow, QMessageBox, QPushButton, QSlider, QSpinBox,
-                               QSplitter, QTabWidget, QToolBar, QVBoxLayout, QWidget)
+                               QMainWindow, QMessageBox, QPushButton, QSizePolicy, QSlider, QSpinBox,
+                               QSplitter, QToolBar, QVBoxLayout, QWidget)
 
 from .. import companion
 from ..commands import CommandLine
@@ -267,46 +267,65 @@ class MainWindow(QMainWindow):
         action(m, "Keyboard shortcuts", lambda: QMessageBox.information(self, "Shortcuts", SHORTCUTS))
         self._refresh_recent()
 
+        from .icons import icon
         tb = QToolBar("Main")
         tb.setMovable(False)
-        tb.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        tb.setIconSize(QSize(18, 18))
         self.addToolBar(tb)
-        for text, fn, tip in (("📂 Open .SHO", self.import_dialog, "Open a CODE MINI 1000T show file"),
-                              ("💾 Save", self.save, "Save (writes into the console file when opened from .SHO)"),
-                              ("🔗 Connect console", self.connect_wizard, "Plug & play: Art-Net, USB DMX, MIDI"),
-                              ("⚙ Preferences", self.preferences, "Application settings")):
-            a = QAction(text, self)
+        logo = QLabel("  ◉ MiniDesk  ")
+        logo.setStyleSheet("color:#f5b331; font-weight:800; font-size:12pt; padding-right:8px;")
+        tb.addWidget(logo)
+        for text, fn, tip, ic in (("Open .SHO", self.import_dialog, "Open a CODE MINI 1000T show file", "open"),
+                                  ("Save", self.save, "Save (writes into the console file when opened from .SHO)",
+                                   "save"),
+                                  ("Connect", self.connect_wizard, "Plug & play: Art-Net, USB DMX, MIDI", "connect"),
+                                  ("Settings", self.preferences, "Preferences", "settings")):
+            a = QAction(icon(ic), text, self)
             a.setToolTip(tip)
             a.triggered.connect(fn)
             tb.addAction(a)
         tb.addSeparator()
-        self.a_bo = QAction("⬛ BLACKOUT", self)
+        self.a_bo = QAction(icon("blackout", "#ff7a7a"), "BLACKOUT", self)
         self.a_bo.setCheckable(True)
+        self.a_bo.setToolTip("Blackout: all intensity to zero (B)")
         self.a_bo.toggled.connect(self._blackout)
         tb.addAction(self.a_bo)
-        tb.addWidget(QLabel("  Grand master "))
+        tb.addWidget(QLabel("  GM "))
         self.gm = QSlider(Qt.Horizontal)
         self.gm.setRange(0, 100)
         self.gm.setValue(100)
-        self.gm.setFixedWidth(120)
+        self.gm.setFixedWidth(110)
+        self.gm.setToolTip("Grand master")
         self.gm_lbl = QLabel("100%")
+        self.gm_lbl.setMinimumWidth(40)
         self.gm.valueChanged.connect(self._gm)
         tb.addWidget(self.gm)
         tb.addWidget(self.gm_lbl)
         tb.addSeparator()
-        tb.addWidget(QLabel("  Show in stage view: "))
+        tb.addWidget(QLabel(" View "))
         self.src = QComboBox()
         self.src.addItems(["auto", "program (PC)", "console input", "mix (HTP)"])
-        self.src.setToolTip("auto = console input when it is received, otherwise this program")
+        self.src.setToolTip("What the stage view shows: auto = console input when it is received, "
+                            "otherwise this program")
         self.src.currentTextChanged.connect(lambda t: setattr(self, "vis_source", t))
         tb.addWidget(self.src)
         tb.addWidget(QLabel("  Haze "))
         haze = QSlider(Qt.Horizontal)
         haze.setRange(0, 100)
         haze.setValue(35)
-        haze.setFixedWidth(90)
+        haze.setFixedWidth(80)
         haze.valueChanged.connect(lambda v: setattr(self.view, "haze", v / 100))
+        self.haze_slider = haze
         tb.addWidget(haze)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        tb.addWidget(spacer)
+        self.led_net, self.led_usb, self.led_midi = QLabel("● Art-Net"), QLabel("● USB"), QLabel("● MIDI")
+        for led in (self.led_net, self.led_usb, self.led_midi):
+            led.setToolTip("grey = off, orange = waiting / unplugged, green = connected – click Connect")
+            led.setObjectName("chip")
+            tb.addWidget(led)
 
         # banner
         self.banner = QLabel()
@@ -318,6 +337,7 @@ class MainWindow(QMainWindow):
         self.view = StageView(self.engine.show, self.vis_dmx)
         self.view.fixtureClicked.connect(self._vis_click)
         self.view.layoutEdited.connect(self._layout_edited)
+        self.view.modeChanged.connect(lambda _m: hasattr(self, "stage") and self.stage.sync_mode())
 
         self.sheet = FixtureSheet(self.engine, self.vis_dmx)
         self.sheet.selectionChanged.connect(self._selection_changed)
@@ -342,16 +362,14 @@ class MainWindow(QMainWindow):
         self.fx = self.prog.fx
         self.fx.storeRequested.connect(self.store_dialog)
         self.fx.changed.connect(self.sheet.grid.update)
-        self.tabs = QTabWidget()
-        self.tabs.setDocumentMode(True)
-        self.tabs.setUsesScrollButtons(True)
-        self.tabs.setElideMode(Qt.ElideNone)
+        from .nav import NavTabs
+        self.tabs = NavTabs()
         self._tab_pages = {}
-        for w, label in ((self.sheet, "🎛 Fixtures"), (self.prog, "🎚 Programmer"), (self.fx, "✦ Effects"),
-                         (self.presets, "🎨 Presets"), (self.cues, "🎞 Cues"), (self.stage, "📐 Stage"),
-                         (self.patch, "🔌 Patch"), (self.monitor, "📊 DMX")):
-            self.tabs.addTab(self._scroll(w), label)
-            self._tab_pages[w] = self.tabs.count() - 1
+        for w, label, ic in ((self.sheet, "Fixtures", "fixtures"), (self.prog, "Programmer", "programmer"),
+                             (self.fx, "Effects", "effects"), (self.presets, "Presets", "presets"),
+                             (self.cues, "Cues", "cues"), (self.stage, "Stage", "stage"),
+                             (self.patch, "Patch", "patch"), (self.monitor, "DMX", "dmx")):
+            self._tab_pages[w] = self.tabs.addTab(self._scroll(w), label, ic)
 
         top = QSplitter(Qt.Horizontal)
         top.setChildrenCollapsible(False)
@@ -371,11 +389,11 @@ class MainWindow(QMainWindow):
         ex_sc.setWidgetResizable(True)
         ex_sc.setFrameShape(QFrame.NoFrame)
         ex_sc.setWidget(self.execs)
-        ex_sc.setMinimumHeight(150)
+        ex_sc.setMinimumHeight(252)
         vs.addWidget(ex_sc)
         vs.setStretchFactor(0, 3)
         vs.setStretchFactor(1, 1)
-        vs.setSizes([680, 280])
+        vs.setSizes([700, 260])
 
         self.cmdline = QLineEdit()
         self.cmdline.setObjectName("cmd")
@@ -397,10 +415,7 @@ class MainWindow(QMainWindow):
         self.st_out = QLabel("Output: off")
         self.st_in = QLabel("Input: off")
         self.st_show = QLabel("")
-        self.led_net, self.led_usb, self.led_midi = QLabel("● Art-Net"), QLabel("● USB"), QLabel("● MIDI")
-        for led in (self.led_net, self.led_usb, self.led_midi):
-            led.setToolTip("grey = off, orange = waiting / unplugged, green = connected. Click Connect console.")
-        for w in (self.st_show, self.st_out, self.st_in, self.led_net, self.led_usb, self.led_midi):
+        for w in (self.st_show, self.st_out, self.st_in):
             self.statusBar().addPermanentWidget(w)
         QShortcut(QKeySequence("Escape"), self, activated=self.cmdline.clear)
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self._go_current)
@@ -519,6 +534,8 @@ class MainWindow(QMainWindow):
         self.view.haze = prefs.get(s, "haze") / 100
         self.view.show_models = prefs.get(s, "models")
         self.view.show_labels = prefs.get(s, "labels")
+        self.view._sync_overlay()
+        self.haze_slider.setValue(prefs.get(s, "haze"))
         m = prefs.get(s, "autosave_min")
         if m > 0:
             self.autosave_timer.start(m * 60000) if hasattr(self, "autosave_timer") else None
@@ -620,7 +637,10 @@ class MainWindow(QMainWindow):
             self.st_in.setText("Input: off")
             self.st_in.setStyleSheet("")
         def led(w, state):
-            w.setStyleSheet({"on": "color:#5f5;", "wait": "color:#fa5;", "off": "color:#555;"}[state])
+            w.setStyleSheet({"on": "color:#6fe08a; background:#16301f; border:1px solid #2a5a39;",
+                             "wait": "color:#ffb45a; background:#33261a; border:1px solid #5c4326;",
+                             "off": "color:#6b7080; background:#1a1c23; border:1px solid #262935;"}[state]
+                            + "border-radius:10px; padding:2px 10px; margin:0 3px;")
         net = cfg.artnet_enabled or cfg.sacn_enabled or cfg.input_mode == "artnet"
         led(self.led_net, "off" if not net else
             ("on" if (cfg.input_mode != "artnet" or (self.dmx_input and self.dmx_input.alive)) else "wait"))

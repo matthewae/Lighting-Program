@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMenu, QPushButton, QSlider, QSpinBox, QVBoxLayout,
-                               QWidget, QComboBox)
+from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QMenu, QProgressBar, QPushButton,
+                               QSlider, QSpinBox, QVBoxLayout, QWidget)
 
 from ..engine import Engine, PlaybackState
 
@@ -32,6 +32,11 @@ class ExecutorStrip(QWidget):
         self.step = QLabel("")
         self.step.setAlignment(Qt.AlignCenter)
         self.step.setStyleSheet("color:#8fd18f; font-size:8pt;")
+        self.prog = QProgressBar()
+        self.prog.setRange(0, 1000)
+        self.prog.setTextVisible(False)
+        self.prog.setFixedHeight(4)
+        self.prog.setObjectName("stepbar")
         self.slider = QSlider(Qt.Vertical)
         self.slider.setRange(0, 100)
         self.slider.setMinimumHeight(60)
@@ -60,7 +65,7 @@ class ExecutorStrip(QWidget):
         self.b_stop.clicked.connect(self._stop)
         self.b_flash.pressed.connect(lambda: self.st and self.engine.set_flash(self.st, True))
         self.b_flash.released.connect(lambda: self.st and self.engine.set_flash(self.st, False))
-        for w in (self.num, self.name, self.step):
+        for w in (self.num, self.name, self.step, self.prog):
             lay.addWidget(w)
         lay.addWidget(self.slider, 1, Qt.AlignHCenter)
         lay.addWidget(self.lvl)
@@ -121,8 +126,10 @@ class ExecutorStrip(QWidget):
         n = len(st.pb.steps)
         if st.running:
             self.step.setText(f"{'❚❚ ' if st.paused else '▶ '}{st.index + 1}/{n}")
-            self.name.setStyleSheet("text-align:center; font-size:8pt; background:#2f5e2f;")
+            self.name.setStyleSheet("text-align:center; font-size:8pt; background:#1f4d2e; border-color:#3fbf6a;")
+            self.prog.setValue(int(self.engine.step_progress(st) * 1000))
         else:
+            self.prog.setValue(0)
             self.step.setText(f"{n} step{'s' if n != 1 else ''}" + (" chase" if st.pb.mode == "chase" and n > 1 else ""))
             self.name.setStyleSheet("text-align:center; font-size:8pt;")
         v = round(st.level * 100)
@@ -171,6 +178,34 @@ class ExecutorBar(QWidget):
         b_rel.setObjectName("danger")
         b_rel.clicked.connect(self._release_all)
         side.addWidget(b_rel)
+        lay.addLayout(side)
+        side = QVBoxLayout()
+        t2 = QLabel("Master")
+        t2.setObjectName("title")
+        side.addWidget(t2)
+        self.sp = QSlider(Qt.Horizontal)
+        self.sp.setRange(10, 400)
+        self.sp.setValue(100)
+        self.sp.setToolTip("Speed master for all chases (100 % = programmed speed)")
+        self.sp_lbl = QLabel("Speed 100 %")
+        self.sp.valueChanged.connect(self._speed)
+        self.fxs = QSlider(Qt.Horizontal)
+        self.fxs.setRange(10, 400)
+        self.fxs.setValue(100)
+        self.fxs.setToolTip("Speed of all effects")
+        self.fxs_lbl = QLabel("FX speed 100 %")
+        self.fxs.valueChanged.connect(self._fxspeed)
+        b_tap = QPushButton("TAP")
+        b_tap.setToolTip("Tap the beat: sets the speed master (120 BPM = 100 %)")
+        b_tap.clicked.connect(self._tap)
+        b_res = QPushButton("Reset")
+        b_res.clicked.connect(lambda: (self.sp.setValue(100), self.fxs.setValue(100)))
+        for w in (self.sp_lbl, self.sp, self.fxs_lbl, self.fxs):
+            side.addWidget(w)
+        r2 = QHBoxLayout()
+        r2.addWidget(b_tap)
+        r2.addWidget(b_res)
+        side.addLayout(r2)
         side.addStretch(1)
         lay.addLayout(side)
         self.strips = []
@@ -186,6 +221,21 @@ class ExecutorBar(QWidget):
         self.timer.timeout.connect(self.sync)
         self.timer.start(150)
         self.rebind()
+
+    def _speed(self, v):
+        self.engine.speed_master = v / 100
+        self.sp_lbl.setText(f"Speed {v} %")
+
+    def _fxspeed(self, v):
+        self.engine.fx_speed = v / 100
+        self.fxs_lbl.setText(f"FX speed {v} %")
+
+    def _tap(self):
+        m = self.engine.tap_master()
+        self.sp.blockSignals(True)
+        self.sp.setValue(round(m * 100))
+        self.sp.blockSignals(False)
+        self.sp_lbl.setText(f"Speed {round(m * 100)} %  ({round(m * 120)} BPM)")
 
     def _release_all(self):
         self.engine.release_all()

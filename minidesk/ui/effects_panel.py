@@ -6,7 +6,7 @@ import math
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QColorDialog, QDoubleSpinBox, QFormLayout, QGridLayout,
+from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QFormLayout, QGridLayout,
                                QGroupBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                                QPushButton, QScrollArea, QSizePolicy, QSpinBox, QTabWidget,
                                QToolButton, QVBoxLayout, QWidget)
@@ -37,13 +37,33 @@ PRESETS = {
     "gobo_step": dict(speed=0.5, spread=0), "zoom_wave": dict(speed=0.3, spread=360),
     "focus_wave": dict(speed=0.3, spread=360), "iris_wave": dict(speed=0.3, spread=360),
     "prism_flash": dict(speed=0.5, spread=0, duty=0.5), "frost_wave": dict(speed=0.3, spread=360),
+    "infinity": dict(speed=0.3, size=45, spread=360), "heart": dict(speed=0.25, size=45, spread=0),
+    "rose": dict(speed=0.15, size=50, spread=360), "lissajous": dict(speed=0.2, size=45, spread=360),
+    "zigzag": dict(speed=0.2, size=45, spread=180), "fan": dict(speed=0.3, size=60, spread=0),
+    "pendulum": dict(speed=0.4, size=50, spread=90), "nod": dict(speed=0.6, size=40, spread=360),
+    "sweep": dict(speed=0.25, size=50, spread=180), "jump": dict(speed=0.5, size=50, spread=0),
+    "breathe": dict(speed=0.2, spread=180), "heartbeat": dict(speed=1.1, spread=0),
+    "flash_decay": dict(speed=1.0, spread=360), "bounce": dict(speed=0.5, spread=0, duty=0.5),
+    "scanner": dict(speed=0.4, spread=0, duty=0.5), "build": dict(speed=0.3, spread=0),
+    "lightning": dict(speed=1.0, spread=0), "flicker": dict(speed=1.0, spread=0), "candle": dict(speed=1.0, spread=0),
+    "odd_even": dict(speed=1.0, spread=0), "color_wave": dict(speed=0.3, spread=360),
+    "color3": dict(speed=0.6, spread=360), "fire": dict(speed=1.0, spread=0), "ocean": dict(speed=0.15, spread=360),
+    "police": dict(speed=1.0, spread=180), "pastel": dict(speed=0.15, spread=360),
+    "color_strobe": dict(speed=6.0, spread=0, duty=0.5), "zoom_bump": dict(speed=1.0, spread=360),
+    "iris_pulse": dict(speed=1.0, spread=360), "gobo_shake": dict(speed=1.0, spread=0),
+    "prism_spin": dict(speed=0.5, spread=0),
 }
 SHORT = {"dim_sine": "Sine", "dim_saw": "Saw ↑", "dim_pulse": "Ramp ↓", "dim_triangle": "Triangle",
          "dim_chase": "Chase / step", "dim_fade": "Soft chase", "dim_random": "Random", "strobe_random": "Rnd strobe",
          "pan_wave": "Pan sine", "tilt_wave": "Tilt sine", "pan_swing": "Pan swing", "tilt_swing": "Tilt swing",
          "pos_random": "Random", "color_chase": "Chase A/B", "color_fade": "Fade A↔B", "rgb_step": "RGB step",
-         "color_random": "Random", "prism_flash": "Prism on/off"}
-CATS = [("Position", "🎯 Position"), ("Intensity", "💡 Intensity"), ("Color", "🎨 Colour"), ("Beam", "🔆 Beam")]
+         "color_random": "Random", "prism_flash": "Prism on/off", "rose": "Flower", "lissajous": "Lissajous",
+         "sweep": "Sweep", "jump": "Jump", "flash_decay": "Flash decay", "scanner": "Scanner",
+         "flicker": "Fire flicker", "odd_even": "Odd/Even", "bounce": "Bounce", "color_wave": "Hue wave", "color3": "3 colours",
+         "pastel": "Pastel", "color_strobe": "Colour flash", "infinity": "Infinity ∞", "fan": "Fan"}
+ORDERS = [("forward", "→ Forward"), ("backward", "← Backward"), ("center_out", "↔ Centre out"),
+          ("outside_in", "→← Outside in"), ("odd_even", "Odd / even"), ("random", "Random")]
+CATS = [("Position", "Position"), ("Intensity", "Intensity"), ("Color", "Colour"), ("Beam", "Beam")]
 
 
 def shape_icon(kind: str, feature: str, size: int = 46) -> QIcon:
@@ -58,11 +78,25 @@ def shape_icon(kind: str, feature: str, size: int = 46) -> QIcon:
     p.drawRoundedRect(QRectF(1, 1, size - 2, size - 2), 6, 6)
     path = QPainterPath()
     accent = QColor(255, 196, 64)
-    if feature == "Position":
+    if feature == "Position" and kind == "fan":
+        c = QPointF(r.center().x(), r.bottom())
+        for k in range(-3, 4):
+            path.moveTo(c)
+            path.lineTo(QPointF(c.x() + k * r.width() / 7, r.top()))
+    elif feature == "Position":
         for i in range(97):
             x, y = shape_xy(kind, i / 96, 3, i / 96 * 3)
             pt = QPointF(r.center().x() + x * r.width() / 2, r.center().y() - y * r.height() / 2)
             path.moveTo(pt) if i == 0 else path.lineTo(pt)
+    elif feature == "Intensity" and kind in ("bounce", "scanner", "odd_even", "build"):
+        p.setPen(Qt.NoPen)
+        lit = {"bounce": [0, 0, 1, 0, 0], "scanner": [0, 0.3, 0.7, 1, 0.4], "odd_even": [1, 0, 1, 0, 1],
+               "build": [1, 0, 1, 1, 0]}[kind]
+        for i, v in enumerate(lit):
+            p.setBrush(QColor(int(60 + 195 * v), int(60 + 136 * v), int(60 + 4 * v)))
+            p.drawEllipse(QPointF(r.left() + r.width() * (i + 0.5) / 5, r.center().y()), 4, 4)
+        p.end()
+        return QIcon(pm)
     elif feature == "Intensity":
         for i in range(97):
             v = intensity_value(kind, (i / 96 * 2) % 1.0, 0.5, 3, i / 96 * 2, 1)
@@ -81,6 +115,16 @@ def shape_icon(kind: str, feature: str, size: int = 46) -> QIcon:
             elif kind == "color_fade":
                 k = i / (n - 1)
                 c = QColor(int(255 * (1 - k)), 0, int(255 * k))
+            elif kind in ("fire", "ocean", "pastel", "color_wave"):
+                h, sat = {"fire": (0.02 + 0.09 * (i % 4) / 3, 1), "ocean": (0.5 + 0.16 * i / n, 1),
+                          "pastel": (i / n, 0.4), "color_wave": (0.9 + 0.2 * i / n, 1)}[kind]
+                c = QColor(*[int(x * 255) for x in colorsys.hsv_to_rgb(h % 1.0, sat, 1)])
+            elif kind == "police":
+                c = QColor(255, 0, 0) if i < n // 2 else QColor(0, 40, 255)
+            elif kind == "color3":
+                c = QColor(*[(255, 0, 0), (0, 255, 0), (0, 0, 255)][i * 3 // n])
+            elif kind == "color_strobe":
+                c = QColor(255, 255, 255) if i % 3 == 0 else QColor(255, 0, 0)
             else:
                 c = QColor(255, 0, 0) if i < n // 2 else QColor(0, 0, 255)
             p.setBrush(c)
@@ -132,6 +176,9 @@ class EffectsPanel(QWidget):
         hint.setWordWrap(True)
         left.addWidget(hint)
         self.cat_tabs = QTabWidget()
+        self.cat_tabs.setStyleSheet("QTabBar::tab { padding: 6px 10px; margin: 2px 1px 0 1px; }")
+        self._grids = []
+        self._cols = 0
         for feat, label in CATS:
             w = QWidget()
             g = QGridLayout(w)
@@ -151,6 +198,7 @@ class EffectsPanel(QWidget):
                 b.mouseDoubleClickEvent = lambda e, key=k: (self.choose(key), self.start())
                 g.addWidget(b, i // 5, i % 5)
                 self.buttons[k] = b
+            self._grids.append((g, [self.buttons[k] for k in keys]))
             sc = QScrollArea()
             sc.setWidgetResizable(True)
             sc.setWidget(w)
@@ -167,7 +215,7 @@ class EffectsPanel(QWidget):
         left.addLayout(bl)
         lw = QWidget()
         lw.setLayout(left)
-        root.addWidget(lw, 3)
+        root.addWidget(lw, 5)
 
         # --- right: parameters + running effects ---------------------------
         right = QVBoxLayout()
@@ -219,6 +267,15 @@ class EffectsPanel(QWidget):
         self.wings.setRange(1, 8)
         self.wings.setToolTip("Mirror groups (2 = symmetric from the centre)")
         f.addRow("Wings", self.wings)
+        self.order = QComboBox()
+        for k, label in ORDERS:
+            self.order.addItem(label, k)
+        self.order.setToolTip("In which order the fixtures follow each other")
+        f.addRow("Order", self.order)
+        self.blocks = QSpinBox()
+        self.blocks.setRange(1, 32)
+        self.blocks.setToolTip("Number of neighbouring fixtures that move together")
+        f.addRow("Blocks", self.blocks)
         self.duty = QDoubleSpinBox()
         self.duty.setRange(0.05, 0.95)
         self.duty.setSingleStep(0.05)
@@ -232,11 +289,11 @@ class EffectsPanel(QWidget):
         self.reverse = QCheckBox("Reverse direction")
         f.addRow("", self.reverse)
         cr = QHBoxLayout()
-        self.b_a, self.b_b = QPushButton("Colour A"), QPushButton("Colour B")
-        self.b_a.clicked.connect(lambda: self._pick("a"))
-        self.b_b.clicked.connect(lambda: self._pick("b"))
-        cr.addWidget(self.b_a)
-        cr.addWidget(self.b_b)
+        self.b_a, self.b_b, self.b_c = QPushButton("A"), QPushButton("B"), QPushButton("C")
+        self.col_c = (0, 255, 0)
+        for b, k in ((self.b_a, "a"), (self.b_b, "b"), (self.b_c, "c")):
+            b.clicked.connect(lambda _=False, kk=k: self._pick(kk))
+            cr.addWidget(b)
         f.addRow("Colours", cr)
         right.addWidget(g)
         br = QHBoxLayout()
@@ -255,26 +312,40 @@ class EffectsPanel(QWidget):
         right.addWidget(self.list, 1)
         rw = QWidget()
         rw.setLayout(right)
-        rw.setMinimumWidth(300)
+        rw.setMinimumWidth(270)
+        rw.setMaximumWidth(380)
         rw.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         root.addWidget(rw, 2)
         self._colours()
         self.choose("circle")
 
     # ------------------------------------------------------------------ ui
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._relayout()
+
+    def _relayout(self):
+        w = self.cat_tabs.width() - 24
+        cols = max(2, w // 106)
+        if cols == self._cols:
+            return
+        self._cols = cols
+        for g, btns in self._grids:
+            for b in btns:
+                g.removeWidget(b)
+            for i, b in enumerate(btns):
+                g.addWidget(b, i // cols, i % cols)
+
     def _colours(self):
-        self.b_a.setStyleSheet(f"background: rgb{tuple(self.col_a)};")
-        self.b_b.setStyleSheet(f"background: rgb{tuple(self.col_b)};")
+        for b, c in ((self.b_a, self.col_a), (self.b_b, self.col_b), (self.b_c, self.col_c)):
+            txt = "#111" if sum(c) > 380 else "#fff"
+            b.setStyleSheet(f"background: rgb{tuple(c)}; color: {txt};")
 
     def _pick(self, which):
-        cur = self.col_a if which == "a" else self.col_b
+        cur = {"a": self.col_a, "b": self.col_b, "c": self.col_c}[which]
         c = QColorDialog.getColor(QColor(*cur), self)
         if c.isValid():
-            rgb = (c.red(), c.green(), c.blue())
-            if which == "a":
-                self.col_a = rgb
-            else:
-                self.col_b = rgb
+            setattr(self, f"col_{which}", (c.red(), c.green(), c.blue()))
             self._colours()
 
     def choose(self, kind: str) -> None:
@@ -294,15 +365,16 @@ class EffectsPanel(QWidget):
         self.size.setEnabled(feat == "Position")
         self.low.setEnabled(feat in ("Intensity", "Beam"))
         self.high.setEnabled(feat in ("Intensity", "Beam"))
-        self.b_a.setEnabled(feat == "Color")
-        self.b_b.setEnabled(feat == "Color")
+        for b in (self.b_a, self.b_b, self.b_c):
+            b.setEnabled(feat == "Color")
 
     def _make(self, fixtures) -> Effect:
         return Effect(type=self.kind, fixtures=list(fixtures), speed=self.speed.value(), size=self.size.value(),
                       spread=self.spread.value(), wings=self.wings.value(), low=self.low.value(),
                       high=self.high.value(), color_a=self.col_a, color_b=self.col_b,
                       reverse=self.reverse.isChecked(), offset=self.offset.value(), duty=self.duty.value(),
-                      fade=self.fade.value())
+                      fade=self.fade.value(), order=self.order.currentData(), blocks=self.blocks.value(),
+                      color_c=self.col_c)
 
     def refresh(self):
         self.list.blockSignals(True)
@@ -331,7 +403,10 @@ class EffectsPanel(QWidget):
         self.duty.setValue(e.duty)
         self.fade.setValue(e.fade)
         self.reverse.setChecked(e.reverse)
+        self.order.setCurrentIndex(max(0, self.order.findData(getattr(e, "order", "forward"))))
+        self.blocks.setValue(getattr(e, "blocks", 1))
         self.col_a, self.col_b = tuple(e.color_a), tuple(e.color_b)
+        self.col_c = tuple(getattr(e, "color_c", (0, 255, 0)))
         self._colours()
 
     # ------------------------------------------------------------- actions

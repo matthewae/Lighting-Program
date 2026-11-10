@@ -80,6 +80,17 @@ QScrollBar::handle:hover { background: #4a4f63; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
+QListWidget#nav { background: #0e0f13; border: none; border-right: 1px solid #22242e; border-radius: 0;
+    padding-top: 6px; outline: none; }
+QListWidget#nav::item { color: #9aa0b3; border-radius: 10px; margin: 3px 4px; padding-top: 6px; font-size: 8.5pt; }
+QListWidget#nav::item:hover { background: #1c1e27; color: #e6e8ef; }
+QListWidget#nav::item:selected { background: #2a2618; color: #f5b331; border: 1px solid #5a4a1c; }
+QWidget#overlay { background: rgba(14, 15, 19, 200); border: 1px solid #2c2f3c; border-radius: 10px; }
+QWidget#overlay QToolButton { background: transparent; border: none; padding: 4px 8px; border-radius: 6px; }
+QWidget#overlay QToolButton:hover { background: #262936; }
+QWidget#overlay QToolButton:checked { background: #3a3220; color: #f5d27a; }
+QProgressBar#stepbar { background: #0b0c10; border: none; border-radius: 2px; }
+QProgressBar#stepbar::chunk { background: #46d07a; border-radius: 2px; }
 QStatusBar { background: #0e0f13; border-top: 1px solid #22242e; color: #9aa0b3; }
 QStatusBar QLabel { padding: 0 6px; }
 QToolTip { background: #1f212b; color: #e6e8ef; border: 1px solid #f5b331; padding: 6px; border-radius: 4px; }

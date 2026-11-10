@@ -498,8 +498,10 @@ def test_every_effect_runs_on_every_fixture_kind():
         e.select([1, 2, 3])
         e.set_intensity(100)
         e.add_effect(Effect(type=key, fixtures=[1, 2, 3], speed=1.0))
-        frames = {bytes(e.tick(0.07)[0][:40]) for _ in range(12)}
-        assert len(frames) > 1 or key == "iris_wave", f"{key} does not change the output"   # no iris channel in the test fixtures
+        frames = {bytes(e.tick(0.07)[0][:40]) for _ in range(60)}
+        constant = {"iris_wave", "iris_pulse",        # no iris channel in the test fixtures
+                    "gobo_shake", "prism_spin"}       # one DMX value, the fixture itself shakes / spins
+        assert len(frames) > 1 or key in constant, f"{key} does not change the output"
 
 
 def test_position_shapes_follow_path():
@@ -522,3 +524,17 @@ def test_pan_tilt_invert_swap():
     spot.invert_pan, spot.swap_pan_tilt = True, True
     u = e.tick(0.0)[0]
     assert (u[16], u[18]) == (255 - 200, 10)
+
+
+def test_effect_order_and_blocks():
+    from minidesk.effects import fixture_phase
+    from minidesk.model import Effect
+    e = Effect(type="dim_chase", fixtures=list(range(1, 9)), spread=360, order="center_out")
+    ph = [fixture_phase(e, f) for f in e.fixtures]
+    assert ph[3] == ph[4] and ph[0] == ph[7] and ph[3] < ph[0]       # symmetric from the centre
+    e.order, e.blocks = "forward", 2
+    ph = [fixture_phase(e, f) for f in e.fixtures]
+    assert ph[0] == ph[1] and ph[2] == ph[3] and ph[1] < ph[2]       # pairs move together
+    e.order = "odd_even"
+    e.blocks = 1
+    assert [fixture_phase(e, f) for f in (1, 2, 3)] == [0.0, 0.5, 0.0]

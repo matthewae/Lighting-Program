@@ -70,6 +70,9 @@ class Engine:
         self.listeners: list[Callable[[], None]] = []
         self.effects: list[Effect] = []          # programmer effects (live)
         self.clock = 0.0                          # effect time base (seconds)
+        self.speed_master = 1.0                   # scales all chase / cue timing (2 = twice as fast)
+        self.fx_speed = 1.0                       # scales all effect speeds
+        self._taps: list = []
         self._eff_start: dict[int, float] = {}
         self._stamp = 0.0
         self.set_show(show)
@@ -244,6 +247,26 @@ class Engine:
                     st.level = 1.0
             self._goto(st, max(0, min(index, len(st.pb.steps) - 1)))
 
+    def step_progress(self, st: PlaybackState) -> float:
+        """0..1 progress through the current step (fade + hold for chases)."""
+        step = st.step()
+        if step is None or not st.running:
+            return 0.0
+        total = self._fade_time(st, step)
+        if st.pb.mode == "chase" or step.follow:
+            total = max(total, self._hold_time(st, step))
+        return 1.0 if total <= 0 else min(1.0, st.t_step / total)
+
+    def tap_master(self, base_bpm: float = 120.0) -> float:
+        """Global TAP: sets the speed master so that a 120 BPM chase follows the tapped tempo."""
+        now = time.perf_counter()
+        self._taps = [t for t in self._taps if now - t < 4.0] + [now]
+        if len(self._taps) >= 2:
+            iv = [b - a for a, b in zip(self._taps, self._taps[1:])]
+            bpm = 60.0 / (sum(iv) / len(iv))
+            self.speed_master = max(0.1, min(10.0, bpm / base_bpm))
+        return self.speed_master
+
     def tap(self, st: PlaybackState) -> float:
         """Tap tempo: sets the chase speed from the average of the last taps."""
         now = time.perf_counter()
@@ -307,7 +330,7 @@ class Engine:
 
     def _times(self, st: PlaybackState, step: Step) -> tuple[float, float, float, float]:
         """(delay_in, fade_in, delay_out, fade_out) in seconds, after speed factor."""
-        sf = max(st.speed_factor, 0.01)
+        sf = max(st.speed_factor * self.speed_master, 0.01)
         fi = step.fade if step.fade > 0 else st.pb.fade
         fo = step.fade_out if step.fade_out >= 0 else fi
         if st.pb.mode == "chase" and st.pb.xfade > 0:      # crossfade as % of the step time
@@ -323,7 +346,7 @@ class Engine:
 
     def _hold_time(self, st: PlaybackState, step: Step) -> float:
         h = step.hold if step.hold >= 0 else st.pb.speed
-        return max(0.02, h) / max(st.speed_factor, 0.01)
+        return max(0.02, h) / max(st.speed_factor * self.speed_master, 0.01)
 
     @staticmethod
     def _progress(t: float, delay: float, fade: float) -> float:
@@ -390,7 +413,7 @@ class Engine:
 
     def tick(self, dt: float) -> dict[int, bytearray]:
         with self.lock:
-            self.clock += dt
+            self.clock += dt * self.fx_speed
             t = self.clock
             for st in self.states:
                 if st.running:

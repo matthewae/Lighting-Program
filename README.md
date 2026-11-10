@@ -86,15 +86,22 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
 - **Presets** (tab 🎨): simpan programmer sebagai preset *Color / Position / Beam / Intensity / All*,
   klik untuk memakai ke fixture terpilih (fixture tipe sama ikut mendapat nilai), klik kanan untuk
   rename / update / kategori / hapus. Preset dari console ikut terbaca.
-- **Effects** (tab **✦ Effects**, 41 effect seperti effect engine console):
-  - **Position**: Circle, Ellipse, Diamond, Square, Triangle, Figure 8, S shape, Cross, Star, Spiral,
-    **Pan saw, Tilt saw**, Pan/Tilt sine, Pan/Tilt swing, Pan/Tilt step, Ballyhoo, Random position
-  - **Intensity**: Sine, Saw ↑, Ramp ↓, Triangle, **Chase/step**, Soft chase, Random, Sparkle,
-    **Strobe**, Random strobe
-  - **Colour**: Rainbow, Chase A/B, Fade A↔B, RGB step, Random colour
-  - **Beam**: Gobo step, Zoom / Focus / Iris / Frost wave, Prism on/off
-  - Parameter: speed (Hz **dan BPM**), size, low/high, spread, offset, wings, duty, fade-in, reverse.
-    Klik bentuk → *Start on selection* (double-click = langsung start) → *Store…* ke cue.
+- **Effects** (menu **Effects** di sidebar, **72 effect**):
+  - **Position (30)**: Circle, Ellipse, Diamond, Square, Triangle, Figure 8, S shape, Cross, Star,
+    Spiral, Infinity ∞, Heart, Flower, Lissajous, Zig-zag, Fan in/out, Pendulum, Tilt nod, Sweep,
+    **Pan saw, Tilt saw**, Pan/Tilt sine, Pan/Tilt swing, Pan/Tilt step, Ballyhoo, Random, Random jump
+  - **Intensity (20)**: Sine, Saw ↑, Ramp ↓, Triangle, **Chase/step**, Soft chase, Random, Sparkle,
+    **Strobe**, Random strobe, Breathe, Heartbeat, Flash decay, Bounce, Scanner, Build up, Lightning,
+    Fire flicker, Candle, Odd/Even
+  - **Colour (12)**: Rainbow, Chase A/B, Fade A↔B, RGB step, Random, Hue wave, 3 colours, Fire,
+    Ocean, Police, Pastel, Colour flash
+  - **Beam (10)**: Gobo step, Gobo shake, Zoom/Focus/Iris/Frost wave, Zoom bump, Iris pulse,
+    Prism on/off, Prism spin
+  - Parameter: speed (Hz/BPM), size, low/high, spread, offset, wings, **order** (forward, backward,
+    centre out, outside in, odd/even, random), **blocks** (lampu yang bergerak bersama), duty,
+    fade-in, reverse, warna A/B/C. Klik bentuk → *Start on selection* (double-click = langsung) →
+    *Store…* ke cue.
+- **Master**: speed master untuk semua chase, FX speed untuk semua effect, **TAP** tempo global.
 - **Programmer → Intensity**: fader dimmer, strobe Open/Slow/Medium/Fast/Closed, shortcut effect
   Chase/Step/Sine/Saw/Strobe/Sparkle. **Position**: fader Pan & Tilt (posisi awal), Home, shortcut
   Circle/Pan saw/Tilt saw/Diamond/S/Figure 8.
@@ -113,6 +120,9 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
 - **Programmer**: fader per atribut, intensitas cepat, Highlight, color picker, XY pad pan/tilt.
 - **Patch**: tabel + form fixture (nama, tipe, universe, address, *Next free address*, *Unpatch*),
   **Re-address selected** (banyak fixture sekaligus dengan cek tabrakan address).
+- Tampilan modern: **sidebar navigasi** berikon, header dengan chip status Art-Net/USB/MIDI, tombol
+  view 3D/Top/Front langsung di jendela stage, strip playback dengan progress bar step, halaman yang
+  bisa di-scroll di layar kecil.
 - **Splash screen**, layar pembuka, **Preferences** (playback per bank, fade default, autosave project,
   haze, model 3D, label), lampu status koneksi (Art-Net / USB / MIDI) di status bar.
 - **DMX monitor** dan **command line gaya dot2**:

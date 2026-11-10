@@ -34,21 +34,55 @@ def _hash01(a: int, b: int) -> float:
     return ((x ^ (x >> 16)) & 0xFFFF) / 65535.0
 
 
-def fixture_phase(eff: Effect, fid: int) -> float:
-    """Phase offset (0..1) of a fixture inside the effect, honouring wings."""
+def fixture_index(eff: Effect, fid: int) -> tuple[int, int]:
+    """(block index, number of blocks) of a fixture, honouring blocks and wings."""
     fx = eff.fixtures
-    if fid not in fx or len(fx) < 2:
-        return 0.0
     n = len(fx)
-    wings = max(1, min(eff.wings, n))
-    per = math.ceil(n / wings)
-    i = fx.index(fid)
-    w, k = divmod(i, per)
+    blocks = max(1, eff.blocks)
+    nb = max(1, math.ceil(n / blocks))
+    b = fx.index(fid) // blocks if fid in fx else 0
+    wings = max(1, min(eff.wings, nb))
+    per = math.ceil(nb / wings)
+    w, k = divmod(b, per)
     if w % 2 == 1:                       # mirror every second wing
         k = per - 1 - k
+    return k, per
+
+
+def fixture_phase(eff: Effect, fid: int) -> float:
+    """Phase offset (0..1) of a fixture inside the effect (spread, order, blocks, wings)."""
+    if fid not in eff.fixtures or len(eff.fixtures) < 2:
+        return 0.0
+    k, per = fixture_index(eff, fid)
+    order = getattr(eff, "order", "forward")
     if eff.reverse:
-        k = per - 1 - k
-    return (k / per) * (eff.spread / 360.0)
+        order = {"forward": "backward", "backward": "forward", "center_out": "outside_in",
+                 "outside_in": "center_out"}.get(order, order)
+    if order == "odd_even":
+        return 0.5 * (k % 2)
+    if order == "random":
+        x = _hash01(fid, 7)
+    elif order == "backward":
+        x = (per - 1 - k) / per
+    elif order in ("center_out", "outside_in"):
+        mid = (per - 1) / 2
+        d = abs(k - mid) / max(mid, 0.5) * 0.5          # 0 at the centre .. 0.5 at the edges
+        x = d if order == "center_out" else 0.5 - d
+    else:
+        x = k / per
+    return x * (eff.spread / 360.0)
+
+
+def _noise(a: int, x: float) -> float:
+    """Smooth value noise 0..1."""
+    i = int(math.floor(x))
+    f = x - i
+    f = f * f * (3 - 2 * f)
+    return _hash01(a, i) * (1 - f) + _hash01(a, i + 1) * f
+
+
+def wave_global(eff: Effect, t: float) -> float:
+    return (t * eff.speed + eff.offset / 360.0) % 1.0
 
 
 def wave(eff: Effect, t: float, fid: int) -> float:
@@ -128,6 +162,29 @@ def shape_xy(kind: str, ph: float, fid: int = 0, t: float = 0.0, speed: float = 
         p0 = (_hash01(fid, cyc) * 2 - 1, _hash01(fid + 991, cyc) * 2 - 1)
         p1 = (_hash01(fid, cyc + 1) * 2 - 1, _hash01(fid + 991, cyc + 1) * 2 - 1)
         return p0[0] + (p1[0] - p0[0]) * f, p0[1] + (p1[1] - p0[1]) * f
+    if kind == "infinity":
+        d = 1 + math.sin(a) ** 2
+        return math.cos(a) / d, 2 * math.sin(a) * math.cos(a) / d
+    if kind == "heart":
+        x = 16 * math.sin(a) ** 3 / 16
+        y = (13 * math.cos(a) - 5 * math.cos(2 * a) - 2 * math.cos(3 * a) - math.cos(4 * a)) / 17
+        return x, y + 0.1
+    if kind == "rose":
+        r = math.cos(2 * a)
+        return r * math.cos(a), r * math.sin(a)
+    if kind == "lissajous":
+        return math.sin(3 * a), math.sin(2 * a)
+    if kind == "zigzag":
+        return tri(ph), tri((ph * 6) % 1.0) * 0.6
+    if kind == "pendulum":
+        return math.sin(a), -0.35 * math.cos(2 * a)
+    if kind == "nod":
+        return 0.0, -abs(math.sin(a))
+    if kind == "sweep":
+        return tri(ph), 0.5 * math.cos(4 * math.pi * ph)
+    if kind == "jump":
+        cyc = int(t * speed * 2 + ph * 2)
+        return _hash01(fid, cyc) * 2 - 1, _hash01(fid + 991, cyc) * 2 - 1
     # ballyhoo: two incommensurate sines -> pseudo random sweep
     return math.sin(a + 1.3 * math.sin(0.37 * a)), math.sin(1.7 * a + 0.5)
 
@@ -153,6 +210,22 @@ def intensity_value(kind: str, ph: float, duty: float, fid: int, t: float, speed
     if kind == "sparkle":
         slot = int(t * speed * 8)
         return 1.0 if _hash01(fid, slot) > 1.0 - duty * 0.3 else 0.0
+    if kind == "breathe":
+        return ((1 - math.cos(a)) / 2) ** 1.6
+    if kind == "heartbeat":
+        return min(1.0, math.exp(-((ph - 0.1) / 0.045) ** 2) + 0.7 * math.exp(-((ph - 0.32) / 0.045) ** 2))
+    if kind == "flash_decay":
+        return math.exp(-ph * 6)
+    if kind == "build":
+        return 1.0 if ph > _hash01(fid, int(t * speed) + 3) * 0.85 else 0.0
+    if kind == "lightning":
+        slot = int(t * speed * 10)
+        hit = _hash01(17, slot // 3) > 0.8 and _hash01(29, slot) > 0.35
+        return 1.0 if hit else 0.0
+    if kind == "flicker":
+        return 0.45 + 0.55 * _noise(fid, t * speed * 12)
+    if kind == "candle":
+        return 0.7 + 0.3 * _noise(fid + 5, t * speed * 4)
     if kind == "strobe_random":
         slot = int(t * speed)
         return 1.0 if (_hash01(fid, slot) > 0.6 and ph < duty * 0.3) else 0.0
@@ -170,6 +243,27 @@ def colour_value(eff: Effect, ph: float, fid: int, t: float) -> tuple[int, int, 
         return RGB_STEPS[int(ph * len(RGB_STEPS)) % len(RGB_STEPS)]
     if eff.type == "color_random":
         return PALETTE[int(_hash01(fid, int(t * eff.speed)) * len(PALETTE)) % len(PALETTE)]
+    if eff.type == "color_wave":
+        h0 = colorsys.rgb_to_hsv(*(c / 255 for c in eff.color_a))[0]
+        return tuple(int(x * 255) for x in colorsys.hsv_to_rgb((h0 + 0.12 * math.sin(2 * math.pi * ph)) % 1.0, 1, 1))
+    if eff.type == "color3":
+        return tuple((eff.color_a, eff.color_b, getattr(eff, "color_c", (0, 255, 0)))[int(ph * 3) % 3])
+    if eff.type == "fire":
+        n = _noise(fid, t * eff.speed * 10)
+        return tuple(int(x * 255) for x in colorsys.hsv_to_rgb(0.02 + 0.09 * n, 1, 0.55 + 0.45 * n))
+    if eff.type == "ocean":
+        return tuple(int(x * 255) for x in colorsys.hsv_to_rgb(0.5 + 0.16 * (math.sin(2 * math.pi * ph) + 1) / 2,
+                                                             1, 0.75 + 0.25 * math.cos(2 * math.pi * ph)))
+    if eff.type == "police":
+        q = (ph * 2) % 1.0
+        on = q < 0.15 or 0.25 < q < 0.4
+        if not on:
+            return (0, 0, 0)
+        return (255, 0, 0) if ph < 0.5 else (0, 40, 255)
+    if eff.type == "pastel":
+        return tuple(int(x * 255) for x in colorsys.hsv_to_rgb(ph, 0.4, 1))
+    if eff.type == "color_strobe":
+        return (255, 255, 255) if ph < eff.duty * 0.3 else tuple(eff.color_a)
     return tuple(eff.color_a if ph < eff.duty else eff.color_b)
 
 
@@ -207,7 +301,8 @@ def _beam(eff: Effect, ft: FixtureType, vals: list[int], ph: float, level: float
     moving = ft.is_moving
     a = 2 * math.pi * ph
     target = {"zoom_wave": "zoom", "focus_wave": "focus", "iris_wave": "iris", "frost_wave": "frost",
-              "gobo_step": "gobo", "prism_flash": "prism"}[eff.type]
+              "gobo_step": "gobo", "prism_flash": "prism", "zoom_bump": "zoom", "iris_pulse": "iris",
+              "gobo_shake": "gobo", "prism_spin": "prism"}[eff.type]
     for i, c in enumerate(ft.channels):
         if c.attr != target:
             continue
@@ -218,6 +313,28 @@ def _beam(eff: Effect, ft: FixtureType, vals: list[int], ph: float, level: float
             if not gobos:
                 continue
             new = gobos[int(ph * len(gobos)) % len(gobos)]
+        elif eff.type == "gobo_shake":
+            fn = c.functions(moving)
+            shake = [lo + (hi - lo) // 3 for lo, hi, lab in fn if "shake" in lab.lower()]
+            gob = [(lo + hi) // 2 for lo, hi, lab in fn if lab.lower().startswith("gobo")]
+            if shake:
+                new = shake[0]
+            elif gob:
+                new = gob[0] if ph < 0.5 else 0
+            else:
+                continue
+        elif eff.type in ("zoom_bump", "iris_pulse"):
+            k = math.exp(-ph * 5)
+            new = eff.low + (eff.high - eff.low) * k
+        elif eff.type == "prism_spin":
+            on = [(lo + hi) // 2 for lo, hi, lab in c.functions(moving) if "on" in lab.lower() and "off" not in lab.lower()]
+            new = on[0] if on else 60
+            for j, cc in enumerate(ft.channels):          # rotate the prism
+                if cc.attr == "prism_rot":
+                    rot = [lo + (hi - lo) // 3 for lo, hi, lab in cc.functions(moving) if "cw" in lab.lower()
+                           and "ccw" not in lab.lower()]
+                    if rot:
+                        vals[j] = rot[0]
         elif eff.type == "prism_flash":
             on = [(lo + hi) // 2 for lo, hi, lab in c.functions(moving) if "on" in lab.lower() and "off" not in lab.lower()]
             off = [(lo + hi) // 2 for lo, hi, lab in c.functions(moving) if "off" in lab.lower()]
@@ -237,7 +354,12 @@ def apply_effect(eff: Effect, ft: FixtureType, fid: int, vals: list[int], t: flo
     ph = wave(eff, t, fid)
     chans = ft.channels
     if eff.type in POSITION:
-        dp, dt = shape_xy(eff.type, ph, fid, t, eff.speed)
+        if eff.type == "fan":
+            k, per = fixture_index(eff, fid)
+            spread = (k / max(per - 1, 1)) * 2 - 1 if per > 1 else 0.0
+            dp, dt = spread * (math.sin(2 * math.pi * wave_global(eff, t)) + 1) / 2, 0.0
+        else:
+            dp, dt = shape_xy(eff.type, ph, fid, t, eff.speed)
         dp, dt = dp * eff.size * level, dt * eff.size * level
         for i, c in enumerate(chans):
             if c.attr == "pan":
@@ -246,7 +368,19 @@ def apply_effect(eff: Effect, ft: FixtureType, fid: int, vals: list[int], t: flo
                 vals[i] = int(max(0, min(255, vals[i] + dt)))
         return
     if eff.type in INTENSITY:
-        v = intensity_value(eff.type, ph, eff.duty, fid, t, eff.speed)
+        if eff.type in ("bounce", "scanner", "odd_even"):
+            k, per = fixture_index(eff, fid)
+            g = wave_global(eff, t)
+            if eff.type == "odd_even":
+                v = 1.0 if (k % 2 == 0) == (g < 0.5) else 0.0
+            else:
+                head = (tri(g) + 1) / 2 * max(per - 1, 0)
+                width = max(0.6, per * eff.duty * (0.25 if eff.type == "bounce" else 0.6))
+                v = max(0.0, 1.0 - abs(k - head) / width)
+                if eff.type == "scanner":
+                    v = v ** 0.6
+        else:
+            v = intensity_value(eff.type, ph, eff.duty, fid, t, eff.speed)
         out = eff.low + (eff.high - eff.low) * v
         dims = [i for i, c in enumerate(chans) if c.attr == "dimmer"]
         if level < 1.0:        # fade the effect in from the current value
