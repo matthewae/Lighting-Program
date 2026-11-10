@@ -138,7 +138,7 @@ class CommandLine:
                         mode = "merge"
                     elif opt.lower() in ("/overwrite", "/o"):
                         mode = "overwrite"
-                if not eng.programmer:
+                if eng.programmer_empty:
                     return "Programmer is empty – nothing to store"
                 pb = self._pb(num)
                 if pb is None:

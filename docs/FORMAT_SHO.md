@@ -11,6 +11,15 @@ Worked out from a real show file (`samples/GMS_MATT.SHO`). All offsets are in th
 | 4 | … | zlib stream |
 
 The decompressed image (~6.8 MB) starts with `SHOWMINI1000` and ends with `EXTD`.
+The console compresses with zlib **level 1** – recompressing an unchanged image with level 1
+reproduces the original file byte for byte.
+
+| Header offset | Content |
+|---|---|
+| `0x20` / `0x24` | section 2 offset (`0x5DDE68`) / size |
+| `0x28` / `0x2C` | section 3 offset / size |
+| `0x30` / `0x34` | `EXTD` offset / size |
+| `0x3C` | **CRC32 of `data[0x40:]`** (little endian) – must be updated after any change |
 
 ## Tables
 
@@ -18,14 +27,17 @@ The decompressed image (~6.8 MB) starts with `SHOWMINI1000` and ends with `EXTD`
 |---|---|---|
 | `0x1520` | 4+4 bytes | console IP and netmask |
 | `0x1571` | records of `0x8B3` bytes | fixture library (see below) |
-| `0x6E449` | 512 bytes per group | group membership, one byte per fixture index (non-zero = member) |
+| `0x6E449` | 512 bytes per group, 400 groups | group membership, one byte per fixture index (`0xFF` = member) |
+| `0x515E68` | 0x400 bytes per group | member order: u16 fixture indices, `0xFFFF` terminated |
 | `0xA0449` | 20 bytes per group | group names |
-| `0xA2589` | `0x190` bytes per fixture | patch; first u16 = DMX address, 0 based (`0xFFFF` = unpatched) |
+| `0xA2589` | `0x190` bytes per fixture | patch; first u16 = absolute DMX address 0..2047 (universe×512 + address−1), `0xFFFF` = unpatched |
 | `0xD4B89` | 1 byte per fixture | channel count |
 | `0xD4F89` | 20 bytes per fixture | fixture (user) names, 512 slots |
 | `0xD7789` | 1 byte per fixture | library index of each fixture (`0xFF` = empty slot) |
-| `0xD7F89` | 1 byte per DMX channel | channel number inside the fixture |
-| `0xD8789` | u16 per DMX channel | fixture index that owns the DMX channel |
+| `0xA2389` | 1 byte per fixture | `0xFF` = patched |
+| `0xD4D89` | 1 byte per fixture | `0xFF` = slot in use |
+| `0xD7F8C` | 1 byte per DMX channel (2048) | channel number inside the fixture (stale for free channels) |
+| `0xD878C` | u16 per DMX channel (2048) | fixture index that owns the DMX channel, `0xFFFF` = free |
 | `0xD9C60` | 600 × 64 bytes | playbacks ("PlayBack001" …) |
 | `0xEFA60` | 64 byte records | fixed playbacks (Ambience, Greeter, …) |
 | `0x115E5E` | 0xC0 byte blocks | heap holding playback/step data |

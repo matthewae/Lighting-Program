@@ -41,7 +41,8 @@ def auto_layout(show: Show) -> None:
                 rows.setdefault(g.name, []).append(fid)
     for f in show.fixtures:
         if f.fid not in assigned:
-            kind = show.ftype(f).kind
+            ft = show.ftype(f)
+            kind = "moving" if ft.is_moving else ft.kind
             key = "floor" if kind == "fog" else f"type:{kind}"
             assigned[f.fid] = key
             rows.setdefault(key, []).append(f.fid)

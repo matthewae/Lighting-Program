@@ -15,7 +15,7 @@ class ExecutorStrip(QWidget):
         super().__init__(parent)
         self.engine = engine
         self.st: PlaybackState | None = None
-        self.setFixedWidth(96)
+        self.setFixedWidth(84)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(2, 2, 2, 2)
         lay.setSpacing(2)
@@ -92,9 +92,10 @@ class ExecutorStrip(QWidget):
             self.slider.blockSignals(False)
             self.lvl.setText("")
             return
-        self.num.setText(f"Exec {st.pb.number}")
+        self.num.setText(f"{st.pb.number}")
+        self.num.setToolTip(f"Executor {st.pb.number}  ({st.pb.bank})")
         nm = st.pb.name
-        self.name.setText(nm if len(nm) <= 12 else nm[:11] + "…")
+        self.name.setText(nm if len(nm) <= 10 else nm[:9] + "…")
         n = len(st.pb.steps)
         if st.running:
             self.step.setText(f"{'❚❚ ' if st.paused else '▶ '}{st.index + 1}/{n}")
@@ -113,7 +114,7 @@ class ExecutorStrip(QWidget):
 class ExecutorBar(QWidget):
     playbackSelected = Signal(object)
 
-    def __init__(self, engine: Engine, per_page: int = 10, parent=None):
+    def __init__(self, engine: Engine, per_page: int = 15, parent=None):
         super().__init__(parent)
         self.engine = engine
         self.per_page = per_page
@@ -122,14 +123,15 @@ class ExecutorBar(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(2, 2, 2, 2)
         side = QVBoxLayout()
-        t = QLabel("Executors")
+        t = QLabel("Playbacks")
         t.setObjectName("title")
         side.addWidget(t)
+        side.addWidget(QLabel(f"{per_page} per bank"))
         self.bank = QComboBox()
         self.bank.addItems(["All", "With steps", "Fixed", "Playback", "User"])
         self.bank.currentTextChanged.connect(self._bank)
         side.addWidget(self.bank)
-        side.addWidget(QLabel("Page"))
+        side.addWidget(QLabel("Bank"))
         self.spin = QSpinBox()
         self.spin.setRange(1, 1)
         self.spin.valueChanged.connect(self._page)

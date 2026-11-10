@@ -70,7 +70,7 @@ def compute(fx: Fixture, ft: FixtureType, dmx: bytes, now: float) -> VisState:
     elif any(a in vals for a in rgb_attrs):
         inten = 1.0
     else:
-        inten = 0.0 if ft.kind != "fog" else 0.0
+        inten = 0.0
     gate = 1.0
     for attr in ("shutter", "strobe"):
         if attr in vals:
@@ -120,9 +120,9 @@ def compute(fx: Fixture, ft: FixtureType, dmx: bytes, now: float) -> VisState:
         direction = aim_direction(fx.aim, fx.rot, floor)
     # --- beam --------------------------------------------------------------
     angle = ft.beam_angle
-    if "zoom" in vals and ft.kind == "moving":
+    if "zoom" in vals and ft.is_moving:
         angle = max(2.0, ft.beam_angle * (0.6 + first("zoom") / 255 * 2.0))
-    if "frost" in vals and first("frost") > 20 and ft.kind == "moving":
+    if "frost" in vals and first("frost") > 20 and ft.is_moving:
         angle *= 1.8
     fog = 0.0
     if ft.kind == "fog":

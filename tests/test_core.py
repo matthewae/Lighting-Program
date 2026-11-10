@@ -59,7 +59,8 @@ def test_import_patch_and_types(imported):
 def test_import_groups(imported):
     show, _ = imported
     g = {x.name: x.fixtures for x in show.groups}
-    assert g["ALL PAR"] == list(range(1, 19))
+    assert sorted(g["ALL PAR"]) == list(range(1, 19))
+    assert g["ALL PAR"][:4] == [18, 17, 16, 15]          # console member order is kept
     assert g["STRB TOWER"] == [27, 30]
     assert g["HAZER"] == [41]
 
@@ -190,3 +191,102 @@ def test_artnet_input_loopback():
         assert inp.snapshot()[:3] == bytearray([10, 20, 30])
     finally:
         inp.stop()
+
+
+# ------------------------------------------------------------------ effects
+def test_position_effect_moves_pan():
+    from minidesk.model import Effect
+    s = small_show()
+    e = Engine(s)
+    e.add_effect(Effect(type="circle", fixtures=[3], speed=1.0, size=50))
+    seen = set()
+    for _ in range(40):
+        seen.add(e.tick(0.025)[0][16])        # pan of the spot
+    assert max(seen) - min(seen) > 60
+
+
+def test_intensity_chase_effect_and_store():
+    from minidesk.model import Effect
+    s = small_show()
+    e = Engine(s)
+    e.select([1, 2])
+    e.add_effect(Effect(type="dim_chase", fixtures=[1, 2], speed=1.0, spread=360))
+    u = e.tick(0.1)[0]
+    assert {u[0], u[8]} == {0, 255}             # one on, one off
+    pb = Playback(name="FX", number=3)
+    s.playbacks.append(pb)
+    e.store(pb)
+    assert pb.steps[0].effects and pb.steps[0].effects[0].type == "dim_chase"
+    e.clear_programmer()
+    st = e.state_for(pb)
+    e.go(st)
+    u = e.tick(0.1)[0]
+    assert {u[0], u[8]} == {0, 255}
+
+
+def test_delay_and_fade_out():
+    s = small_show()
+    pb = Playback(name="T", number=1, mode="cuelist", steps=[
+        Step(values={1: {0: 255}}, fade=1.0, delay=1.0),
+        Step(values={1: {0: 0}}, fade=0.0, fade_out=2.0)])
+    s.playbacks.append(pb)
+    e = Engine(s)
+    st = e.states[0]
+    e.go(st)
+    e.tick(0.5)
+    assert e.tick(0.0)[0][0] == 0               # still in the delay
+    e.tick(1.0)
+    assert 100 < e.tick(0.0)[0][0] < 160        # half way through fade in
+    e.tick(1.0)
+    e.go(st)                                     # step 2: fade out over 2 s
+    e.tick(1.0)
+    assert 100 < e.tick(0.0)[0][0] < 160
+
+
+# --------------------------------------------------------------- .SHO write
+def test_sho_save_unchanged_is_identical(tmp_path):
+    import shutil
+    from minidesk.sho_file import ShoDocument
+    p = tmp_path / "A.SHO"
+    shutil.copy(SAMPLE, p)
+    show, _ = import_sho(str(p))
+    doc = ShoDocument.open(str(p))
+    rep = doc.save(show)
+    assert not rep.errors and rep.verified
+    assert p.read_bytes() == open(SAMPLE, "rb").read()
+
+
+def test_sho_save_changes(tmp_path):
+    import shutil
+    from minidesk.model import Group
+    from minidesk.sho_file import ShoDocument
+    p = tmp_path / "B.SHO"
+    shutil.copy(SAMPLE, p)
+    show, _ = import_sho(str(p))
+    doc = ShoDocument.open(str(p))
+    show.fixture(46).address = 460
+    show.fixture(1).name = "PAR KIRI"
+    show.fixtures.append(Fixture(66, "NEW", "Centurion/CLED-543", 1, 1))
+    show.groups.append(Group("BARU", [66, 46]))
+    show.playbacks[0].name = "Ambience 2"
+    rep = doc.save(show, backup_dir=str(tmp_path / "bk"))
+    assert not rep.errors and rep.verified and rep.backup
+    s2, _ = import_sho(str(p))
+    assert s2.fixture(46).address == 460 and s2.fixture(1).name == "PAR KIRI"
+    assert s2.fixture(66).universe == 1 and s2.fixture(66).type_key == "Centurion/CLED-543"
+    assert [g.fixtures for g in s2.groups if g.name == "BARU"] == [[66, 46]]
+    assert s2.playbacks[0].name == "Ambience 2"
+    assert sum(len(p.steps) for p in s2.playbacks) == sum(len(p.steps) for p in show.playbacks)
+
+
+def test_sho_save_rejects_overlap(tmp_path):
+    import shutil
+    from minidesk.sho_file import ShoDocument
+    p = tmp_path / "C.SHO"
+    shutil.copy(SAMPLE, p)
+    show, _ = import_sho(str(p))
+    doc = ShoDocument.open(str(p))
+    show.fixture(2).address = 3
+    rep = doc.save(show)
+    assert rep.errors
+    assert p.read_bytes() == open(SAMPLE, "rb").read()

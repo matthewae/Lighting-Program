@@ -1,21 +1,23 @@
-"""Main window: ties engine, visualizer, programmer, executors and I/O together."""
+"""Main window: ties engine, visualizer, programmer, playbacks, stage editor and I/O together."""
 from __future__ import annotations
 
 import os
 import traceback
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
-                               QFormLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
-                               QSlider, QSplitter, QTabWidget, QToolBar, QVBoxLayout, QWidget,
-                               QSpinBox)
+                               QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+                               QMainWindow, QMessageBox, QPushButton, QSlider, QSpinBox,
+                               QSplitter, QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
+from .. import companion
 from ..commands import CommandLine
 from ..dmx_io import (ArtNetInput, ArtNetOutput, EnttecProInput, EnttecProOutput, SacnOutput,
                       local_ips)
 from ..engine import Engine, EngineRunner
 from ..model import Playback, Show, builtin_types
+from ..sho_file import ShoDocument, step_signature
 from ..sho_import import ShoFormatError, import_sho
 from .cue_editor import CueEditor
 from .dmx_monitor import DmxMonitor
@@ -24,16 +26,49 @@ from .fixture_sheet import FixtureSheet
 from .patch import PatchPanel
 from .programmer import ProgrammerPanel
 from .settings import IOSettingsDialog
+from .stage_editor import StageEditor
 from .theme import DARK_QSS
 from .visualizer import StageView
 
-APP_NAME = "MiniDesk – CODE MINI 1000T companion"
+APP_NAME = "MiniDesk"
+
+GUIDE = """<h3>Panduan singkat MiniDesk (CODE MINI 1000T)</h3>
+<ol>
+<li><b>Buka file console</b>: File → Open console file (.SHO). Fixture, patch, group dan playback dari
+console langsung muncul.</li>
+<li><b>Stage Layout</b> (tab): atur ukuran panggung lalu pilih <i>Top</i> atau <i>Front</i> dan drag fixture
+ke posisinya. Pilih banyak fixture (Ctrl+klik / tarik kotak) lalu pakai tombol align.</li>
+<li><b>Patch</b> (tab): ganti nama, tipe, universe, address. <i>Edit fixture type &amp; 3D model</i> untuk
+memilih model (beam, spot, wash, PAR, fresnel, strobe, LED bar, blinder, fog).</li>
+<li><b>Fixtures / Groups</b>: klik group/fixture untuk memilih. Klik kanan group: rename / update / delete.</li>
+<li><b>Programmer</b>: atur intensity, color, position, beam. Tab <b>Effects ✦</b> untuk effect
+(circle, figure 8, wave, dimmer chase/sine/random, strobe, rainbow, color chase) dengan speed, size,
+spread, wings, duty dan fade-in.</li>
+<li><b>Store…</b> menyimpan programmer (nilai + effect) sebagai cue di sebuah playback.
+Timing per cue (delay in, fade in, delay out, fade out, hold) diatur di tab <b>Cues</b>.</li>
+<li>Mainkan dengan fader <b>Playbacks</b> di bawah (15 playback per bank).</li>
+<li><b>Save (Ctrl+S)</b>: jika show berasal dari file .SHO, nama fixture, tipe, address, group dan nama playback
+<b>ditulis langsung ke file .SHO</b>, lalu file dibaca ulang untuk verifikasi. Salin file ke USB,
+colokkan ke console dan load.</li>
+<li>Untuk melihat console secara live: Console → DMX I/O → Input = artnet / enttec.</li>
+</ol>
+<p>Yang <b>tidak</b> bisa masuk ke file console (formatnya tidak menyediakan tempat): posisi stage, model 3D,
+effect, perubahan isi/timing cue dan playback buatan MiniDesk. Semua itu tersimpan otomatis di project
+MiniDesk dan muncul lagi saat file .SHO yang sama dibuka.</p>
+"""
+
+SHORTCUTS = """Ctrl+O  open   ·   Ctrl+S  save   ·   Ctrl+I  import .SHO
+Tab (in stage view)  3D → Top → Front
+Ctrl+click  add to selection   ·   drag box (Top/Front)  select several
+Ctrl+Space  GO on the playback shown in the Cues tab
+Esc  clear the command line
+Command line:  fixture 1 thru 8 at 50  |  group 2 at full  |  go 3  |  store 5  |  clear"""
 
 
 class StoreDialog(QDialog):
     def __init__(self, engine: Engine, current: Playback | None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Store programmer")
+        self.setWindowTitle("Store programmer as cue")
         self.engine = engine
         f = QFormLayout(self)
         self.num = QSpinBox()
@@ -42,17 +77,23 @@ class StoreDialog(QDialog):
         self.num.setValue(current.number if current else (max(nums, default=0) + 1))
         self.name = QLineEdit()
         self.mode = QComboBox()
-        self.mode.addItems(["add step", "merge into last step", "overwrite last step"])
+        self.mode.addItems(["add as new cue", "merge into last cue", "overwrite last cue"])
+        self.delay = QDoubleSpinBox()
+        self.delay.setRange(0, 600)
+        self.delay.setSuffix(" s")
         self.fade = QDoubleSpinBox()
         self.fade.setRange(0, 600)
         self.fade.setSuffix(" s")
         self.lbl = QLabel()
         self.num.valueChanged.connect(self._upd)
-        f.addRow("Executor number", self.num)
+        n_fx = len(engine.effects)
+        f.addRow(QLabel(f"Programmer: {len(engine.programmer)} fixture(s), {n_fx} effect(s)"))
+        f.addRow("Playback number", self.num)
         f.addRow("", self.lbl)
         f.addRow("Name (new playback)", self.name)
         f.addRow("Mode", self.mode)
-        f.addRow("Step fade", self.fade)
+        f.addRow("Delay in", self.delay)
+        f.addRow("Fade in", self.fade)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
@@ -67,7 +108,7 @@ class StoreDialog(QDialog):
 
     def _upd(self):
         p = self._pb()
-        self.lbl.setText(f"existing: {p.name} ({len(p.steps)} steps)" if p else "new playback will be created")
+        self.lbl.setText(f"existing: {p.name} ({len(p.steps)} cues)" if p else "a new playback will be created")
 
     def apply(self) -> Playback:
         pb = self._pb()
@@ -77,17 +118,53 @@ class StoreDialog(QDialog):
             self.engine.show.playbacks.append(pb)
             self.engine.rebuild_patch()
         mode = {0: "add", 1: "merge", 2: "overwrite"}[self.mode.currentIndex()]
-        self.engine.store(pb, mode, fade=self.fade.value())
+        st = self.engine.store(pb, mode, fade=self.fade.value())
+        if mode == "add":
+            st.delay = self.delay.value()
         return pb
 
 
+class WelcomeDialog(QDialog):
+    def __init__(self, recent: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Welcome to MiniDesk")
+        self.choice: tuple[str, str] | None = None
+        self.resize(560, 420)
+        lay = QVBoxLayout(self)
+        t = QLabel("<h2>MiniDesk</h2>Lighting programmer &amp; 3D visualizer for "
+                   "<b>CODE MINI 1000T / MINI 1000T PRO</b>")
+        lay.addWidget(t)
+        for text, key in (("📂  Open console file (.SHO) – edit and save back for the console", "sho"),
+                          ("🗂  Open MiniDesk project (.mdshow)", "mdshow"),
+                          ("✨  New empty show", "new")):
+            b = QPushButton(text)
+            b.setMinimumHeight(46)
+            b.setStyleSheet("text-align:left; padding-left:14px; font-size:11pt;")
+            b.clicked.connect(lambda _=False, k=key: self._pick(k, ""))
+            lay.addWidget(b)
+        if recent:
+            lay.addWidget(QLabel("Recent files (double-click)"))
+            self.list = QListWidget()
+            self.list.addItems(recent)
+            self.list.itemDoubleClicked.connect(lambda it: self._pick("path", it.text()))
+            lay.addWidget(self.list, 1)
+        else:
+            lay.addStretch(1)
+
+    def _pick(self, k, p):
+        self.choice = (k, p)
+        self.accept()
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, path: str | None = None):
+    def __init__(self, path: str | None = None, welcome: bool = True):
         super().__init__()
-        self.setWindowTitle(APP_NAME)
-        self.resize(1600, 980)
+        self.resize(1680, 1000)
         self.setStyleSheet(DARK_QSS)
+        self.settings = QSettings("MiniDesk", "MiniDesk")
         self.path: str | None = None
+        self.doc: ShoDocument | None = None
+        self.dirty = False
         show = Show()
         for t in builtin_types():
             show.add_type(t)
@@ -102,49 +179,85 @@ class MainWindow(QMainWindow):
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._status)
         self.status_timer.start(500)
+        self._update_title()
         if path:
             self.open_path(path)
+        elif welcome:
+            QTimer.singleShot(200, self.show_welcome)
 
     # ------------------------------------------------------------------ build
     def _build(self) -> None:
-        tb = QToolBar("Main")
-        tb.setMovable(False)
-        self.addToolBar(tb)
+        mb = self.menuBar()
 
-        def act(text, fn, shortcut=None, checkable=False):
+        def action(menu, text, fn, shortcut=None, checkable=False):
             a = QAction(text, self)
             a.triggered.connect(fn)
             if shortcut:
                 a.setShortcut(QKeySequence(shortcut))
             a.setCheckable(checkable)
-            tb.addAction(a)
+            menu.addAction(a)
             return a
 
-        act("New", self.new_show)
-        act("Open…", self.open_dialog, "Ctrl+O")
-        act("Save", self.save, "Ctrl+S")
-        act("Save as…", self.save_as)
-        act("Import MINI 1000 .SHO…", self.import_dialog, "Ctrl+I")
+        m = mb.addMenu("&File")
+        action(m, "New show", self.new_show, "Ctrl+N")
+        action(m, "Open console file (.SHO)…", self.import_dialog, "Ctrl+I")
+        action(m, "Open…", self.open_dialog, "Ctrl+O")
+        self.m_recent = m.addMenu("Open recent")
+        m.addSeparator()
+        action(m, "Save", self.save, "Ctrl+S")
+        action(m, "Save as…", self.save_as, "Ctrl+Shift+S")
+        action(m, "Export MiniDesk project (.mdshow)…", self.export_project)
+        m.addSeparator()
+        action(m, "Exit", self.close, "Ctrl+Q")
+        m = mb.addMenu("&Edit")
+        action(m, "Store programmer as cue…", self.store_dialog, "Ctrl+Return")
+        action(m, "Clear programmer", lambda: self.prog.clear())
+        m = mb.addMenu("&View")
+        action(m, "3D view", lambda: self._view("3d"), "F5")
+        action(m, "Top view (edit X/Y)", lambda: self._view("top"), "F6")
+        action(m, "Front view (edit X/Z)", lambda: self._view("front"), "F7")
+        action(m, "Reset camera", lambda: self.view.reset_camera())
+        m = mb.addMenu("&Console")
+        action(m, "DMX output / console input…", self.io_settings)
+        action(m, "Console file info & check…", self.file_info)
+        m = mb.addMenu("&Help")
+        action(m, "Quick guide (Bahasa Indonesia)", self.show_guide, "F1")
+        action(m, "Keyboard shortcuts", lambda: QMessageBox.information(self, "Shortcuts", SHORTCUTS))
+        self._refresh_recent()
+
+        tb = QToolBar("Main")
+        tb.setMovable(False)
+        tb.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.addToolBar(tb)
+        for text, fn, tip in (("📂 Open .SHO", self.import_dialog, "Open a CODE MINI 1000T show file"),
+                              ("💾 Save", self.save, "Save (writes into the console file when opened from .SHO)"),
+                              ("🔌 DMX I/O", self.io_settings, "Art-Net / sACN / USB DMX output and console input")):
+            a = QAction(text, self)
+            a.setToolTip(tip)
+            a.triggered.connect(fn)
+            tb.addAction(a)
         tb.addSeparator()
-        act("DMX I/O…", self.io_settings)
-        tb.addSeparator()
-        self.a_bo = act("BLACKOUT", self._blackout, None, True)
-        tb.addWidget(QLabel(" GM "))
+        self.a_bo = QAction("⬛ BLACKOUT", self)
+        self.a_bo.setCheckable(True)
+        self.a_bo.toggled.connect(self._blackout)
+        tb.addAction(self.a_bo)
+        tb.addWidget(QLabel("  Grand master "))
         self.gm = QSlider(Qt.Horizontal)
         self.gm.setRange(0, 100)
         self.gm.setValue(100)
         self.gm.setFixedWidth(120)
-        self.gm.valueChanged.connect(lambda v: setattr(self.engine, "grand_master", v / 100))
+        self.gm_lbl = QLabel("100%")
+        self.gm.valueChanged.connect(self._gm)
         tb.addWidget(self.gm)
+        tb.addWidget(self.gm_lbl)
         tb.addSeparator()
-        tb.addWidget(QLabel(" Visualizer source "))
+        tb.addWidget(QLabel("  Show in stage view: "))
         self.src = QComboBox()
         self.src.addItems(["auto", "program (PC)", "console input", "mix (HTP)"])
+        self.src.setToolTip("auto = console input when it is received, otherwise this program")
         self.src.currentTextChanged.connect(lambda t: setattr(self, "vis_source", t))
         tb.addWidget(self.src)
-        act("3D / Top", lambda: self.view.toggle_mode())
-        act("Reset camera", lambda: self.view.reset_camera())
-        tb.addWidget(QLabel(" Haze "))
+        tb.addWidget(QLabel("  Haze "))
         haze = QSlider(Qt.Horizontal)
         haze.setRange(0, 100)
         haze.setValue(35)
@@ -152,52 +265,66 @@ class MainWindow(QMainWindow):
         haze.valueChanged.connect(lambda v: setattr(self.view, "haze", v / 100))
         tb.addWidget(haze)
 
+        # banner
+        self.banner = QLabel()
+        self.banner.setWordWrap(True)
+        self.banner.setTextFormat(Qt.RichText)
+        self.banner.setStyleSheet("padding:6px 10px; background:#1b2333; border-bottom:1px solid #2a3550;")
+
         self.view = StageView(self.engine.show, self.vis_dmx)
         self.view.fixtureClicked.connect(self._vis_click)
-        self.view.fixtureMoved.connect(lambda _f: None)
+        self.view.layoutEdited.connect(self._layout_edited)
 
         self.sheet = FixtureSheet(self.engine, self.vis_dmx)
         self.sheet.selectionChanged.connect(self._selection_changed)
+        self.sheet.groupsChanged.connect(self.mark_dirty)
         self.prog = ProgrammerPanel(self.engine)
         self.prog.storeRequested.connect(self.store_dialog)
         self.prog.programmerChanged.connect(self.sheet.grid.update)
         self.cues = CueEditor(self.engine)
-        self.cues.changed.connect(lambda: self.execs.rebind())
+        self.cues.changed.connect(lambda: (self.execs.rebind(), self.mark_dirty()))
         self.cues.loadedToProgrammer.connect(self._selection_changed)
         self.patch = PatchPanel(self.engine)
         self.patch.changed.connect(self._patch_changed)
+        self.patch.selectFixtures.connect(self._select_from_patch)
+        self.stage = StageEditor(self.engine, self.view)
+        self.stage.changed.connect(self._layout_edited)
         self.monitor = DmxMonitor({"program output": self.prog_dmx, "console input": self.input_dmx,
-                                   "visualizer": self.vis_dmx}, lambda: self.engine.show)
+                                   "stage view": self.vis_dmx}, lambda: self.engine.show)
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self.sheet, "Fixtures / Groups")
-        self.tabs.addTab(self.prog, "Programmer")
-        self.tabs.addTab(self.cues, "Cues")
-        self.tabs.addTab(self.patch, "Patch")
-        self.tabs.addTab(self.monitor, "DMX")
+        self.tabs.addTab(self.sheet, "🎛 Fixtures / Groups")
+        self.tabs.addTab(self.prog, "🎚 Programmer")
+        self.tabs.addTab(self.cues, "🎞 Cues")
+        self.tabs.addTab(self.stage, "📐 Stage Layout")
+        self.tabs.addTab(self.patch, "🔌 Patch")
+        self.tabs.addTab(self.monitor, "📊 DMX")
 
         top = QSplitter(Qt.Horizontal)
         top.addWidget(self.view)
         top.addWidget(self.tabs)
-        top.setSizes([900, 700])
+        top.setSizes([900, 760])
         self.execs = ExecutorBar(self.engine)
         self.execs.playbackSelected.connect(self._edit_playback)
         vs = QSplitter(Qt.Vertical)
         vs.addWidget(top)
         vs.addWidget(self.execs)
-        vs.setSizes([640, 320])
+        vs.setSizes([650, 330])
 
         self.cmdline = QLineEdit()
         self.cmdline.setObjectName("cmd")
         self.cmdline.setPlaceholderText("Command:  fixture 1 thru 8 at 50  |  group 2 at full  |  go 3  |  "
-                                        "store 5  |  clear  |  blackout")
+                                        "store 5  |  clear  |  blackout      (F1 = guide)")
         self.cmdline.returnPressed.connect(self._run_cmd)
         self.cmd_out = QLabel("")
         central = QWidget()
         cl = QVBoxLayout(central)
-        cl.setContentsMargins(2, 2, 2, 2)
+        cl.setContentsMargins(2, 0, 2, 2)
+        cl.addWidget(self.banner)
         cl.addWidget(vs, 1)
-        cl.addWidget(self.cmdline)
+        row = QHBoxLayout()
+        row.addWidget(self.cmdline, 1)
+        cl.addLayout(row)
         cl.addWidget(self.cmd_out)
         self.setCentralWidget(central)
 
@@ -206,8 +333,9 @@ class MainWindow(QMainWindow):
         self.st_show = QLabel("")
         for w in (self.st_show, self.st_out, self.st_in):
             self.statusBar().addPermanentWidget(w)
-        QShortcut(QKeySequence("Escape"), self, activated=self._escape)
+        QShortcut(QKeySequence("Escape"), self, activated=self.cmdline.clear)
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self._go_current)
+        self._update_banner()
 
     # ------------------------------------------------------------ DMX sources
     def prog_dmx(self) -> dict[int, bytes]:
@@ -224,10 +352,7 @@ class MainWindow(QMainWindow):
         cfg = self.engine.show.output
         alive = bool(self.dmx_input and self.dmx_input.alive)
         if src == "auto":
-            if alive:
-                src = "console input" if cfg.input_merge == "replace" else "mix (HTP)"
-            else:
-                src = "program (PC)"
+            src = ("console input" if cfg.input_merge == "replace" else "mix (HTP)") if alive else "program (PC)"
         if src == "console input":
             return self.input_dmx()
         prog = self.prog_dmx()
@@ -284,6 +409,7 @@ class MainWindow(QMainWindow):
         if d.exec():
             d.apply()
             self.restart_io()
+            self.mark_dirty()
 
     def _status(self) -> None:
         cfg = self.engine.show.output
@@ -304,21 +430,74 @@ class MainWindow(QMainWindow):
             self.st_in.setText("Input: off")
             self.st_in.setStyleSheet("")
         running = sum(1 for s in self.engine.states if s.running)
-        self.st_show.setText(f"{self.engine.show.name}  |  {len(self.engine.show.fixtures)} fixtures  |  "
-                             f"{running} playback(s) running" + ("  |  BLACKOUT" if self.engine.blackout else ""))
+        self.st_show.setText(f"{len(self.engine.show.fixtures)} fixtures  |  {running} playback(s) running  |  "
+                             f"{len(self.engine.effects)} effect(s) in programmer"
+                             + ("  |  BLACKOUT" if self.engine.blackout else ""))
+
+    # ---------------------------------------------------------------- state
+    def mark_dirty(self, *_):
+        if not self.dirty:
+            self.dirty = True
+            self._update_title()
+            self._update_banner()
+
+    def _update_title(self):
+        name = self.engine.show.name
+        src = os.path.basename(self.doc.path) if self.doc else (os.path.basename(self.path) if self.path else "")
+        self.setWindowTitle(f"{'● ' if self.dirty else ''}{APP_NAME} – {src or name}")
+
+    def _update_banner(self):
+        if self.doc:
+            state = ("<span style='color:#ffb347'>● unsaved changes – press <b>Ctrl+S</b></span>"
+                     if self.dirty else "<span style='color:#7fdf7f'>✔ saved</span>")
+            self.banner.setText(
+                f"🔌 <b>Console file:</b> {self.doc.path}   {state}<br>"
+                "<span style='color:#9aa'>Save writes fixture names, types, DMX addresses, groups and playback "
+                "names straight into this .SHO (CRC updated, file re-read to verify). Copy it to the USB stick "
+                "and load it on the console.</span>")
+        elif self.path:
+            self.banner.setText(f"🗂 <b>MiniDesk project:</b> {self.path}"
+                                + ("   <span style='color:#ffb347'>● unsaved</span>" if self.dirty else ""))
+        else:
+            self.banner.setText("No file open – <b>File → Open console file (.SHO)</b> to start from your "
+                                "console show, or patch fixtures in the Patch tab.")
 
     # ---------------------------------------------------------------- actions
     def _blackout(self, on: bool) -> None:
         self.engine.blackout = on
 
+    def _gm(self, v: int) -> None:
+        self.engine.grand_master = v / 100
+        self.gm_lbl.setText(f"{v}%")
+
+    def _view(self, mode: str) -> None:
+        self.view.set_mode(mode)
+        self.stage.sync_mode()
+        if mode != "3d":
+            self.tabs.setCurrentWidget(self.stage)
+
     def _vis_click(self, fid: int, add: bool) -> None:
-        self.engine.select([fid], add=add)
+        if fid < 0:
+            self.engine.select([])
+        else:
+            self.engine.select([fid], add=add)
         self._selection_changed()
+
+    def _select_from_patch(self, fids: list) -> None:
+        self.engine.select(list(fids))
+        self.view.selection = set(self.engine.selection)
+        self.stage.refresh()
 
     def _selection_changed(self) -> None:
         self.view.selection = set(self.engine.selection)
         self.prog.rebuild()
+        self.prog.fx.refresh()
+        self.stage.refresh()
         self.sheet.grid.update()
+
+    def _layout_edited(self) -> None:
+        self.stage.refresh()
+        self.mark_dirty()
 
     def _edit_playback(self, st) -> None:
         self.cues.bind(st)
@@ -328,24 +507,23 @@ class MainWindow(QMainWindow):
         if self.cues.st:
             self.engine.go(self.cues.st)
 
-    def _escape(self) -> None:
-        self.cmdline.clear()
-
     def _run_cmd(self) -> None:
         text = self.cmdline.text()
         try:
             msg = self.cmd.run(text)
-        except Exception as e:   # user typo should never crash the app
+        except Exception as e:   # a typo must never crash the app
             msg = f"Error: {e}"
         self.cmd_out.setText(f"> {text}    {msg}")
         self.cmdline.clear()
+        if "stored" in msg:
+            self.mark_dirty()
         self.execs.rebind()
         self._selection_changed()
         self.a_bo.setChecked(self.engine.blackout)
 
     def store_dialog(self) -> None:
-        if not self.engine.programmer:
-            QMessageBox.information(self, "Store", "The programmer is empty.")
+        if self.engine.programmer_empty:
+            QMessageBox.information(self, "Store", "The programmer is empty – set some values or start an effect.")
             return
         d = StoreDialog(self.engine, self.cues.st.pb if self.cues.st else None, self)
         if d.exec():
@@ -354,75 +532,220 @@ class MainWindow(QMainWindow):
             self.execs.rebind()
             self.execs.show_playback(st)
             self.cues.bind(st)
+            self.mark_dirty()
 
     def _patch_changed(self) -> None:
         self.engine.rebuild_patch()
         self.sheet.rebuild()
+        self.stage.refresh()
         self.view.update()
+        self.mark_dirty()
+
+    def show_guide(self) -> None:
+        d = QDialog(self)
+        d.setWindowTitle("Panduan")
+        d.resize(720, 620)
+        lay = QVBoxLayout(d)
+        t = QLabel(GUIDE)
+        t.setWordWrap(True)
+        t.setTextFormat(Qt.RichText)
+        lay.addWidget(t, 1)
+        b = QPushButton("OK")
+        b.clicked.connect(d.accept)
+        lay.addWidget(b)
+        d.exec()
+
+    def file_info(self) -> None:
+        if not self.doc:
+            QMessageBox.information(self, "Console file", "No console file is open.")
+            return
+        s = self.engine.show
+        ci = s.console_info
+        txt = (f"File: {self.doc.path}\nConsole: {ci.get('console')}   IP {ci.get('ip')} / {ci.get('netmask')}\n"
+               f"Header CRC: {'valid' if self.doc.crc_ok() else 'INVALID'}\n"
+               f"Fixture library: {sum(1 for t in s.types.values() if t.lib_index >= 0)} types\n"
+               f"Fixtures: {len(s.fixtures)} ({sum(1 for f in s.fixtures if f.patched)} patched)\n"
+               f"Groups: {len(s.groups)}\nPlaybacks: {len(s.playbacks)}\n"
+               f"Companion project: {companion.path_for(s)}\nBackups: {companion.BACKUPS}")
+        QMessageBox.information(self, "Console file", txt)
 
     # ------------------------------------------------------------------ files
-    def set_show(self, show: Show, path: str | None) -> None:
+    def _refresh_recent(self):
+        self.m_recent.clear()
+        for p in self.recent():
+            a = QAction(p, self)
+            a.triggered.connect(lambda _=False, path=p: self.open_path(path))
+            self.m_recent.addAction(a)
+
+    def recent(self) -> list[str]:
+        r = self.settings.value("recent", [])
+        if isinstance(r, str):
+            r = [r]
+        return [p for p in (r or []) if os.path.exists(p)][:8]
+
+    def _add_recent(self, p: str):
+        r = [x for x in self.recent() if x != p]
+        self.settings.setValue("recent", [p] + r[:7])
+        self._refresh_recent()
+
+    def show_welcome(self):
+        d = WelcomeDialog(self.recent(), self)
+        if d.exec() and d.choice:
+            k, p = d.choice
+            if k == "sho":
+                self.import_dialog()
+            elif k == "mdshow":
+                self.open_dialog()
+            elif k == "path":
+                self.open_path(p)
+
+    def maybe_save(self) -> bool:
+        if not self.dirty:
+            return True
+        r = QMessageBox.question(self, "Unsaved changes", "Save your changes first?",
+                                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+        if r == QMessageBox.Cancel:
+            return False
+        if r == QMessageBox.Save:
+            return self.save()
+        return True
+
+    def set_show(self, show: Show, path: str | None, doc: ShoDocument | None = None) -> None:
         self.engine.release_all()
         self.engine.set_show(show)
-        self.path = path
+        self.path, self.doc = path, doc
         self.view.set_show(show)
         self.sheet.rebuild()
         self.prog.rebuild()
+        self.prog.fx.refresh()
         self.patch.rebuild()
+        self.stage.refresh()
         self.cues.bind(None)
         if any(p.steps for p in show.playbacks):
             self.execs.bank.setCurrentText("With steps")
         self.execs.rebind()
         self.restart_io()
-        self.setWindowTitle(f"{APP_NAME}  –  {show.name}")
+        self.dirty = False
+        self._update_title()
+        self._update_banner()
 
     def new_show(self) -> None:
+        if not self.maybe_save():
+            return
         show = Show()
         for t in builtin_types():
             show.add_type(t)
         self.set_show(show, None)
 
     def open_path(self, path: str) -> None:
+        if not self.maybe_save():
+            return
         try:
             if path.lower().endswith(".sho"):
                 show, rep = import_sho(path)
-                self.set_show(show, None)
-                self.statusBar().showMessage(f"Imported {os.path.basename(path)}: {rep.summary()}", 15000)
+                companion.remember_imported(show)
+                restored = companion.load(show)
+                doc = ShoDocument.open(path)
+                doc.signature = step_signature(show)
+                self.set_show(show, None, doc)
+                msg = f"Opened {os.path.basename(path)}: {rep.summary()}"
+                if restored:
+                    msg += "  (stage layout & MiniDesk edits restored)"
+                if not doc.crc_ok():
+                    QMessageBox.warning(self, "Console file", "The header checksum of this file is not valid. "
+                                        "It may be damaged – keep a copy before saving.")
+                self.statusBar().showMessage(msg, 15000)
             else:
                 self.set_show(Show.load(path), path)
+            self._add_recent(path)
         except (ShoFormatError, OSError, ValueError, KeyError) as e:
             traceback.print_exc()
             QMessageBox.critical(self, "Open", f"Could not open {path}:\n{e}")
 
     def open_dialog(self) -> None:
-        p, _ = QFileDialog.getOpenFileName(self, "Open show", "",
-                                           "Shows (*.mdshow *.SHO *.sho);;MiniDesk show (*.mdshow);;"
-                                           "MINI 1000 show (*.SHO *.sho)")
+        p, _ = QFileDialog.getOpenFileName(self, "Open", "",
+                                           "Shows (*.SHO *.sho *.mdshow);;Console file (*.SHO *.sho);;"
+                                           "MiniDesk project (*.mdshow)")
         if p:
             self.open_path(p)
 
     def import_dialog(self) -> None:
-        p, _ = QFileDialog.getOpenFileName(self, "Import CODE MINI 1000T show", "",
-                                           "MINI 1000 show (*.SHO *.sho);;All files (*)")
+        p, _ = QFileDialog.getOpenFileName(self, "Open CODE MINI 1000T show", "",
+                                           "Console show (*.SHO *.sho);;All files (*)")
         if p:
             self.open_path(p)
 
-    def save(self) -> None:
+    def _save_console(self, path: str | None = None) -> bool:
+        show = self.engine.show
+        with self.engine.lock:
+            rep = self.doc.save(show, path=path, backup_dir=companion.BACKUPS)
+        if rep.errors:
+            QMessageBox.critical(self, "Save – not saved", rep.text())
+            return False
+        show.source_path = self.doc.path
+        try:
+            companion.save(show)
+        except OSError as e:
+            rep.not_saved.append(f"(companion project could not be written: {e})")
+        self.doc.signature = step_signature(show)
+        self.dirty = False
+        self._update_title()
+        self._update_banner()
+        self.patch.rebuild()
+        self.sheet.rebuild()
+        self._add_recent(self.doc.path)
+        box = QMessageBox(QMessageBox.Information if rep.verified else QMessageBox.Warning,
+                          "Saved to console file", rep.text().split("\n")[0], parent=self)
+        box.setInformativeText("Verification: " + ("OK – file re-read, CRC valid, content matches." if rep.verified
+                                                   else "FAILED – do not use this file, restore the backup."))
+        box.setDetailedText(rep.text())
+        box.exec()
+        return True
+
+    def save(self) -> bool:
+        if self.doc:
+            return self._save_console()
         if not self.path:
             return self.save_as()
         self.engine.show.save(self.path)
+        self.dirty = False
+        self._update_title()
+        self._update_banner()
         self.statusBar().showMessage(f"Saved {self.path}", 5000)
+        return True
 
-    def save_as(self) -> None:
-        p, _ = QFileDialog.getSaveFileName(self, "Save show", f"{self.engine.show.name}.mdshow",
-                                           "MiniDesk show (*.mdshow)")
-        if p:
-            if not p.endswith(".mdshow"):
-                p += ".mdshow"
+    def save_as(self) -> bool:
+        if self.doc:
+            p, _ = QFileDialog.getSaveFileName(self, "Save console file as", self.doc.path,
+                                               "Console show (*.SHO)")
+            if not p:
+                return False
+            if not p.upper().endswith(".SHO"):
+                p += ".SHO"
+            return self._save_console(p)
+        return self.export_project()
+
+    def export_project(self) -> bool:
+        p, _ = QFileDialog.getSaveFileName(self, "Save MiniDesk project", f"{self.engine.show.name}.mdshow",
+                                           "MiniDesk project (*.mdshow)")
+        if not p:
+            return False
+        if not p.endswith(".mdshow"):
+            p += ".mdshow"
+        self.engine.show.save(p)
+        if not self.doc:
             self.path = p
-            self.save()
+            self.dirty = False
+            self._update_title()
+            self._update_banner()
+        self._add_recent(p)
+        self.statusBar().showMessage(f"Saved {p}", 5000)
+        return True
 
     def closeEvent(self, e):
+        if not self.maybe_save():
+            e.ignore()
+            return
         self.runner.stop()
         for o in self.outputs:
             try:

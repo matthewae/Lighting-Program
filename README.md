@@ -6,49 +6,74 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
 
 | Fitur kompatibilitas | Keterangan |
 |---|---|
-| Import file show console (`*.SHO`) | Library fixture (nama, merk, nama channel, tabel wheel A/B), patch DMX, tipe tiap fixture, group, playback + fixed playback (Ambience, Greeter, Sermon, …) beserta step/cue-nya |
-| Visualizer live dari console | Terima DMX dari console via **Art-Net** (console punya port network – IP di file contoh: `192.168.0.231`) atau via interface **USB DMX (ENTTEC DMX USB Pro) mode input** |
-| Output ke lampu | Art-Net, sACN (E1.31) dan ENTTEC DMX USB Pro |
+| **Buka & simpan langsung file show console (`*.SHO`)** | Edit lalu **Save (Ctrl+S)** → ditulis kembali ke file `.SHO` yang sama (CRC header dihitung ulang, file dibaca ulang untuk verifikasi). Salin ke USB, colok ke console, load, mainkan. |
+| Isi file yang dibaca | Library fixture, patch DMX (4 universe), tipe tiap fixture, group (nama + anggota + urutan), playback & fixed playback beserta step/cue-nya, IP console |
+| Visualizer live dari console | DMX dari console via **Art-Net** atau interface **USB DMX (ENTTEC Pro) mode input** |
+| Output ke lampu | Art-Net, sACN (E1.31), ENTTEC DMX USB Pro |
 
-![Programmer + visualizer](docs/screenshot_programmer.png)
+![Programmer + effects + visualizer 3D](docs/screenshot_programmer.png)
+
+![Stage Layout editor (Top view)](docs/screenshot_stage_layout.png)
 
 ![Visualizer mengikuti DMX live dari console (Art-Net)](docs/screenshot_console_live.png)
 
-> File console **tidak pernah diubah** – import bersifat read-only. Hasil kerja disimpan sebagai
-> `*.mdshow` (JSON).
+## Apa yang disimpan ke file console (.SHO)
+
+| Bisa diubah di MiniDesk dan **ditulis ke .SHO** | Hanya di MiniDesk (format console tidak punya tempatnya) |
+|---|---|
+| Nama fixture, tipe fixture (dari library console), universe & address, patch/unpatch | Posisi di panggung (Stage Layout), model 3D |
+| Tambah fixture baru (tipe dari library console) | Effect, perubahan isi/timing cue |
+| Group: buat, ganti nama, ubah anggota & urutan, hapus | Playback baru yang dibuat di MiniDesk |
+| Nama playback & fixed playback | Pengaturan visual tipe fixture |
+| Tabel kepemilikan channel DMX console + CRC header | |
+
+- Simpan tanpa perubahan menghasilkan file **identik byte-per-byte** dengan aslinya; hanya byte
+  yang Anda ubah yang berubah, sisanya (cue, preset, setting console) tetap utuh.
+- Sebelum menulis, MiniDesk menolak penyimpanan bila ada address bertabrakan, fixture melewati
+  batas universe, atau tipe fixture yang tidak ada di library console – file lama tidak disentuh.
+- Setiap Save membuat **backup** file sebelumnya di `~/.minidesk/backups/`.
+- Menghapus fixture yang berasal dari console tidak didukung (cue di console bisa memakainya) –
+  gunakan **Unpatch**.
+- Data "hanya di MiniDesk" disimpan otomatis di `~/.minidesk/projects/` dan muncul lagi saat file
+  `.SHO` yang sama dibuka (USB tetap hanya berisi file console). Atau simpan sebagai project
+  `.mdshow` lewat *File → Export MiniDesk project*.
+
+> ⚠️ Format `.SHO` dibaca dari file show asli (tidak ada dokumentasi resmi). Penulisan sudah diuji
+> (round-trip byte-identik, verifikasi CRC, import ulang), tetapi **belum diuji langsung di console**.
+> Uji dulu di console dengan salinan file, dan simpan backup show asli Anda.
 
 ## Fitur
 
-- **Visualizer 3D** (drag = orbit, scroll = zoom, klik = pilih fixture) dengan beam berwarna,
-  light-pool di lantai/dinding, pan/tilt moving head (termasuk 16-bit fine), zoom/frost, strobe/shutter,
-  efek haze/fog (fog machine di patch ikut menambah haze), dan **Top view** untuk menggeser posisi
-  fixture (tombol *3D / Top* atau tombol `Tab` di visualizer).
-- **Fixtures / Groups sheet**: tombol group (dari console) + grid fixture dengan warna output live.
-- **Programmer**: fader per channel dikelompokkan *Intensity / Position / Color / Beam / Other*,
-  tombol intensitas cepat (0 … Full), *Highlight*, color picker & swatch (RGB/RGBW, CMY, atau
-  color wheel), XY pad pan/tilt.
-- **Executor bar** (seperti executor wing dot2): fader level, GO, back, pause, stop, Flash,
-  halaman executor, filter (All / With steps / Fixed / Playback / User).
-- **Playback engine**: mode *chase* (otomatis maju sesuai speed) dan *cuelist* (maju dengan GO),
-  crossfade per step, intensitas **HTP** + atribut lain **LTP**, Grand Master & Blackout.
-- **Cue editor**: ubah nama/mode/speed/fade, edit fade & hold per step, urutkan, hapus,
-  *Load → programmer*, *Merge steps → 1 scene*, buat/hapus playback.
-- **Store** dari programmer ke executor (add / merge / overwrite).
-- **Patch**: tambah fixture (termasuk tipe generik bawaan), ubah address/universe/posisi,
-  editor tipe fixture (atribut tiap channel, beam angle, range pan/tilt), auto layout panggung.
-- **DMX monitor** 512 channel (output program, input console, atau yang tampil di visualizer).
-- **Command line gaya dot2**:
+- **Visualizer 3D** dengan **model per tipe fixture**: moving head *beam / spot / wash* (base, yoke
+  dan head ikut pan/tilt), LED PAR, fresnel, strobe, LED bar, blinder, fog/hazer (dengan asap).
+  Beam berwarna, light pool di lantai/dinding, zoom/frost, strobe/shutter, haze.
+  Model bisa diganti di *Patch → Edit fixture type & 3D model*.
+- **Stage Layout** (tab khusus): ukuran panggung, view **Top** (geser kiri/kanan + depan/belakang)
+  dan **Front** (geser kiri/kanan + tinggi), drag fixture dengan snap grid, pilih banyak (Ctrl+klik
+  atau tarik kotak), form X/Y/Z, mount, arah (yaw) dan tilt, tombol *Line up*, *Distribute*,
+  *Same height*, *Mirror*, *Centre*, *Turn 180°*, *Auto layout*.
+- **Effects** (Programmer → *Effects ✦*):
+  - Position: circle, figure 8, pan wave, tilt wave, ballyhoo
+  - Intensity: dimmer sine, pulse/ramp, chase, random, strobe
+  - Color: rainbow, color chase (2 warna)
+  - Parameter: speed (Hz/BPM), size, low/high, phase spread, phase offset, wings (mirror),
+    duty, fade-in effect, reverse. Effect bisa disimpan ke cue dan ikut fader playback.
+- **Timing cue**: delay in, fade in, delay out, fade out (untuk intensitas turun), hold (chase).
+- **Playbacks**: **15 playback per bank** (bank 1, 2, …), fader, GO, back, pause, stop, Flash;
+  mode chase / cuelist; intensitas **HTP**, atribut lain **LTP**; Grand Master & Blackout.
+- **Fixtures / Groups**: tile fixture dengan ikon model & warna live; klik kanan group untuk
+  rename / update anggota / hapus.
+- **Programmer**: fader per atribut, intensitas cepat, Highlight, color picker, XY pad pan/tilt.
+- **Patch**: tabel + form fixture (nama, tipe, universe, address, *Next free address*, *Unpatch*).
+- **DMX monitor** dan **command line gaya dot2**:
 
 ```
-fixture 1 thru 8 at 50
-f 1 + 3 + 5 at full
-group 7 at 75
-group 7 red 255
-pan 128
-go 3          back 3          off 3          goto 3 2
-store 5       store 5 /merge  store 5 /overwrite
-clear         blackout        highlight
+fixture 1 thru 8 at 50      f 1 + 3 + 5 at full      group 7 at 75      pan 128
+go 3      back 3      off 3      goto 3 2      store 5      store 5 /merge
+clear     blackout    highlight
 ```
+
+- Menu **Help → Quick guide (F1)** berisi panduan singkat berbahasa Indonesia.
 
 ## Instalasi
 
@@ -108,7 +133,14 @@ Windows: klik dua kali `run_windows.bat`. Linux/macOS: `./run.sh`.
    **LIVE from &lt;IP console&gt;** dan visualizer mengikuti apa pun yang Anda mainkan di console.
    Pilih `mix (HTP)` untuk menggabungkan console + programmer PC.
 
-### B. Programming / pre-programming di PC
+### B. Edit file console lalu pakai di console
+
+1. **File → Open console file (.SHO)** (langsung dari flashdisk boleh).
+2. Ubah patch/nama di tab **Patch**, group di **Fixtures / Groups**, nama playback di **Cues**.
+3. **Ctrl+S** → muncul laporan apa saja yang ditulis + hasil verifikasi.
+4. Cabut flashdisk (*Safely remove*), colok ke console, load show.
+
+### C. Programming / pre-programming di PC
 
 1. Pilih fixture/group → atur di **Programmer** (atau ketik di command line).
 2. **Store…** ke executor (step baru, merge, atau overwrite).

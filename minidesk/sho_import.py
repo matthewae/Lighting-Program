@@ -43,7 +43,16 @@ GROUP_MASKS = 0x6E449         # 512 bytes per group, one byte per fixture
 GROUP_MASK_STRIDE = 0x200
 GROUP_NAMES = 0xA0449
 GROUP_NAME_LEN = 20
-MAX_GROUPS = 200
+MAX_GROUPS = 400             # mask/name/list tables each hold 400 entries
+GROUP_LISTS = 0x515E68        # u16 fixture order list per group, 0xFFFF terminated
+GROUP_LIST_STRIDE = 0x400
+FIX_COUNTS = 0xD4B89          # channel count per fixture
+FIX_EXISTS = 0xD4D89          # 0xFF = slot used
+FIX_PATCHED = 0xA2389         # 0xFF = fixture patched
+DMX_CHIDX = 0xD7F8C           # per DMX channel: channel number inside fixture
+DMX_OWNER = 0xD878C           # per DMX channel: u16 fixture index (0xFFFF = free)
+DMX_CHANNELS = 2048           # 4 universes
+HDR_CRC = 0x3C                # CRC32 of data[0x40:]
 
 PATCH_ADDR = 0xA2589          # u16 address (0 based), stride 0x190
 PATCH_STRIDE = 0x190
@@ -167,19 +176,30 @@ class ShoReader:
             out.append((i, name, t, -1 if addr == 0xFFFF else addr))
         return out
 
-    def groups(self) -> list[tuple[str, list[int]]]:
+    def group_list(self, g: int) -> list[int]:
+        o = GROUP_LISTS + g * GROUP_LIST_STRIDE
+        out = []
+        for k in range(MAX_FIXTURES):
+            v = _u16(self.d, o + 2 * k)
+            if v == 0xFFFF:
+                break
+            out.append(v)
+        return out
+
+    def groups(self) -> list[tuple[int, str, list[int]]]:
+        """Return (slot, name, member fixture indices in console order)."""
         d, out = self.d, []
         for g in range(MAX_GROUPS):
             mo = GROUP_MASKS + g * GROUP_MASK_STRIDE
             no = GROUP_NAMES + g * GROUP_NAME_LEN
-            if mo + MAX_FIXTURES > len(d):
-                break
             name = _text(d[no:no + GROUP_NAME_LEN])
             members = [i for i in range(MAX_FIXTURES) if d[mo + i]]
             if name and not name.isprintable():
                 name = ""
             if name or members:
-                out.append((name or f"Group {g + 1}", members))
+                order = [i for i in self.group_list(g) if i in members]
+                order += [i for i in members if i not in order]
+                out.append((g, name or f"Group {g + 1}", order))
         return out
 
     # ------------------------------------------------------------- playbacks
@@ -280,7 +300,9 @@ def build_type(entry: LibEntry) -> FixtureType:
 def import_sho(path: str) -> tuple[Show, ImportReport]:
     with open(path, "rb") as fh:
         raw = fh.read()
-    return import_sho_bytes(raw, name=path.replace("\\", "/").split("/")[-1])
+    show, rep = import_sho_bytes(raw, name=path.replace("\\", "/").split("/")[-1])
+    show.source_path = path
+    return show, rep
 
 
 def import_sho_bytes(raw: bytes, name: str = "MINI1000") -> tuple[Show, ImportReport]:
@@ -302,6 +324,7 @@ def import_sho_bytes(raw: bytes, name: str = "MINI1000") -> tuple[Show, ImportRe
             ft.name = f"{e.name} ({n})"
             key = ft.key
             n += 1
+        ft.lib_index = idx
         show.add_type(ft)
         type_keys[idx] = key
     rep.types = len(show.types)
@@ -315,13 +338,13 @@ def import_sho_bytes(raw: bytes, name: str = "MINI1000") -> tuple[Show, ImportRe
         fid = i + 1
         uni, a = (addr // 512, addr % 512 + 1) if addr >= 0 else (0, 0)
         show.fixtures.append(Fixture(fid=fid, name=fname or ft.name, type_key=ft.key,
-                                     universe=uni, address=a))
+                                     universe=uni, address=a, slot=i))
         idx_to_fid[i] = fid
     rep.fixtures = len(show.fixtures)
 
-    for gname, members in rd.groups():
+    for gslot, gname, members in rd.groups():
         fids = [idx_to_fid[m] for m in members if m in idx_to_fid]
-        show.groups.append(Group(name=gname, fixtures=fids))
+        show.groups.append(Group(name=gname, fixtures=fids, slot=gslot))
     rep.groups = len(show.groups)
 
     # slot tables per type key for step decoding
@@ -333,7 +356,7 @@ def import_sho_bytes(raw: bytes, name: str = "MINI1000") -> tuple[Show, ImportRe
         times, raw_steps = rd.playback_steps(first, last, valid_fx)
         pb = Playback(name=pname or f"{bank} {i + 1}", bank=bank, number=number,
                       speed=max(0.05, (speed_ms or 1000) / 1000.0),
-                      source=f"{bank} #{i + 1} blocks {first}-{last}")
+                      source=f"{bank} #{i + 1} blocks {first}-{last}", slot=i)
         if times:
             t_a, t_b = times
             if t_b:

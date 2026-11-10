@@ -6,17 +6,18 @@ from typing import Callable
 
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import (QGridLayout, QInputDialog, QLabel, QPushButton, QScrollArea,
-                               QSizePolicy, QVBoxLayout, QWidget, QHBoxLayout)
+from PySide6.QtWidgets import (QGridLayout, QInputDialog, QLabel, QMenu, QMessageBox, QPushButton,
+                               QScrollArea, QSizePolicy, QVBoxLayout, QWidget, QHBoxLayout)
 
 from ..engine import Engine
 from ..model import Group
 from ..vis_state import compute
+from .fixture_models import draw_icon
 
 
 class FixtureGrid(QWidget):
     clicked = Signal(int, bool, bool)    # fid, ctrl, shift
-    TILE_W, TILE_H = 92, 54
+    TILE_W, TILE_H = 104, 58
 
     def __init__(self, engine: Engine, dmx_source: Callable, parent=None):
         super().__init__(parent)
@@ -65,13 +66,16 @@ class FixtureGrid(QWidget):
                 p.setPen(Qt.NoPen)
                 p.setBrush(c)
                 p.drawRoundedRect(QRectF(r.x() + 3, r.bottom() - 9, r.width() - 6, 6), 2, 2)
+            if ft:
+                lit = QColor(*st.colour) if st and st.intensity > 0.02 else None
+                draw_icon(p, QRectF(r.right() - 30, r.top() + 14, 26, 26), ft.kind, lit)
             prog = fx.fid in self.engine.programmer
             p.setPen(QColor(255, 80, 80) if prog else QColor(140, 145, 160))
             p.setFont(f1)
             p.drawText(r.adjusted(5, 3, -4, 0), Qt.AlignLeft | Qt.AlignTop, str(fx.fid))
             p.setFont(f2)
             p.setPen(QColor(205, 205, 215))
-            p.drawText(r.adjusted(5, 16, -4, 0), Qt.AlignLeft | Qt.AlignTop, fx.name[:14])
+            p.drawText(r.adjusted(5, 18, -32, 0), Qt.AlignLeft | Qt.AlignTop, fx.name[:12])
             p.setPen(QColor(110, 112, 128))
             addr = f"{fx.universe + 1}.{fx.address:03d}" if fx.patched else "--"
             p.drawText(r.adjusted(0, 3, -5, 0), Qt.AlignRight | Qt.AlignTop, addr)
@@ -129,9 +133,13 @@ class FixtureSheet(QWidget):
             if w:
                 w.deleteLater()
         for i, g in enumerate(self.engine.show.groups):
-            b = QPushButton(f"{i + 1}  {g.name}\n({len(g.fixtures)})")
+            num = g.slot + 1 if g.slot >= 0 else i + 1
+            b = QPushButton(f"{num}  {g.name}\n({len(g.fixtures)})")
             b.setMinimumHeight(40)
+            b.setToolTip("Click: select   Ctrl+click: add   Right-click: rename / update / delete")
             b.clicked.connect(lambda _=False, grp=g: self.select_group(grp))
+            b.setContextMenuPolicy(Qt.CustomContextMenu)
+            b.customContextMenuRequested.connect(lambda pos, grp=g, btn=b: self._group_menu(grp, btn, pos))
             self.group_lay.addWidget(b, i // 6, i % 6)
         self.grid.relayout()
         self.grid.update()
@@ -159,10 +167,38 @@ class FixtureSheet(QWidget):
         self.selectionChanged.emit()
         self.grid.update()
 
+    groupsChanged = Signal()
+
+    def _group_menu(self, g: Group, btn, pos) -> None:
+        m = QMenu(self)
+        a_ren = m.addAction("Rename…")
+        a_rep = m.addAction("Replace members with current selection")
+        a_add = m.addAction("Add current selection")
+        a_del = m.addAction("Delete group")
+        a = m.exec(btn.mapToGlobal(pos))
+        show = self.engine.show
+        if a == a_ren:
+            name, ok = QInputDialog.getText(self, "Rename group", "Name:", text=g.name)
+            if ok and name.strip():
+                g.name = name.strip()[:16]
+        elif a == a_rep and self.engine.selection:
+            g.fixtures = list(self.engine.selection)
+        elif a == a_add:
+            g.fixtures += [f for f in self.engine.selection if f not in g.fixtures]
+        elif a == a_del:
+            if QMessageBox.question(self, "Delete", f"Delete group '{g.name}'?") != QMessageBox.Yes:
+                return
+            show.groups.remove(g)
+        else:
+            return
+        self.rebuild()
+        self.groupsChanged.emit()
+
     def store_group(self) -> None:
         if not self.engine.selection:
             return
-        name, ok = QInputDialog.getText(self, "Store group", "Group name:")
-        if ok and name:
-            self.engine.show.groups.append(Group(name=name, fixtures=list(self.engine.selection)))
+        name, ok = QInputDialog.getText(self, "Store group", "Group name (max 16 characters):")
+        if ok and name.strip():
+            self.engine.show.groups.append(Group(name=name.strip()[:16], fixtures=list(self.engine.selection)))
             self.rebuild()
+            self.groupsChanged.emit()

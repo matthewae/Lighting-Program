@@ -14,6 +14,15 @@ from ..model import Playback, Step
 class CueEditor(QWidget):
     changed = Signal()
     loadedToProgrammer = Signal()
+    COLS = [("#", "Cue number (double-click = go)"), ("Name", "Cue name"),
+            ("Delay in", "Seconds before the fade in starts"),
+            ("Fade in", "Fade in time (0 = playback default fade)"),
+            ("Delay out", "Seconds before intensity going down starts (-1 = same as delay in)"),
+            ("Fade out", "Fade time for intensity going down (-1 = same as fade in)"),
+            ("Hold", "Chase: time on this cue before the next (-1 = playback speed)"),
+            ("Fixtures", "Number of fixtures in the cue"), ("FX", "Number of effects in the cue"),
+            ("Info", "")]
+    FIELDS = {2: "delay", 3: "fade", 4: "delay_out", 5: "fade_out", 6: "hold"}
 
     def __init__(self, engine: Engine, parent=None):
         super().__init__(parent)
@@ -48,14 +57,16 @@ class CueEditor(QWidget):
         form.addRow("Origin", self.e_num)
         lay.addLayout(form)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["#", "Name", "Fade (s)", "Hold (s, -1=speed)", "Fixtures"])
+        self.table = QTableWidget(0, len(self.COLS))
+        self.table.setHorizontalHeaderLabels([c[0] for c in self.COLS])
+        for i, c in enumerate(self.COLS):
+            self.table.horizontalHeaderItem(i).setToolTip(c[1])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.itemChanged.connect(self._item_changed)
-        self.table.cellDoubleClicked.connect(lambda r, c: self._goto(r) if c in (0, 4) else None)
+        self.table.cellDoubleClicked.connect(lambda r, c: self._goto(r) if c in (0, 8, 9) else None)
         lay.addWidget(self.table, 1)
 
         b = QHBoxLayout()
@@ -104,10 +115,12 @@ class CueEditor(QWidget):
         steps = pb.steps if pb else []
         self.table.setRowCount(len(steps))
         for r, s in enumerate(steps):
-            vals = [str(r + 1), s.name, f"{s.fade:g}", f"{s.hold:g}", str(len(s.values))]
+            fx = ", ".join(e.type for e in s.effects)
+            vals = [str(r + 1), s.name, f"{s.delay:g}", f"{s.fade:g}", f"{s.delay_out:g}", f"{s.fade_out:g}",
+                    f"{s.hold:g}", str(len(s.values)), str(len(s.effects)), fx]
             for c, v in enumerate(vals):
                 it = QTableWidgetItem(v)
-                if c in (0, 4):
+                if c in (0, 7, 8, 9):
                     it.setFlags(it.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(r, c, it)
         self._loading = False
@@ -140,10 +153,12 @@ class CueEditor(QWidget):
         try:
             if it.column() == 1:
                 s.name = it.text()
-            elif it.column() == 2:
-                s.fade = max(0.0, float(it.text()))
-            elif it.column() == 3:
-                s.hold = float(it.text())
+            elif it.column() in self.FIELDS:
+                v = float(it.text())
+                field = self.FIELDS[it.column()]
+                if field in ("delay", "fade"):
+                    v = max(0.0, v)
+                setattr(s, field, v)
         except ValueError:
             pass
         self.changed.emit()
@@ -164,10 +179,13 @@ class CueEditor(QWidget):
         if r < 0:
             return
         s = self.st.pb.steps[r]
+        import copy
         with self.engine.lock:
             for f, chans in s.values.items():
                 self.engine.programmer.setdefault(f, {}).update(chans)
-            self.engine.select(list(s.values))
+            for e in s.effects:
+                self.engine.add_effect(copy.deepcopy(e))
+            self.engine.select(list(s.values) or sorted({f for e in s.effects for f in e.fixtures}))
         self.loadedToProgrammer.emit()
 
     def _delete(self):
@@ -198,6 +216,7 @@ class CueEditor(QWidget):
             for f, chans in s.values.items():
                 merged.values.setdefault(f, {}).update(chans)
             merged.fade = max(merged.fade, s.fade)
+            merged.effects += s.effects
         self.engine.stop(self.st)
         self.st.pb.steps = [merged]
         self.st.pb.mode = "cuelist"

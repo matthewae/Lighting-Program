@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QColorDialog, QGridLayout, QGroupBox, QHBoxLayout
 
 from ..attributes import FEATURE_OF, FEATURES, WHEEL_COLOURS
 from ..engine import Engine
+from .effects_panel import EffectsPanel
 
 QUICK_COLOURS = [
     ("Red", (255, 0, 0)), ("Orange", (255, 110, 0)), ("Yellow", (255, 220, 0)),
@@ -173,6 +174,12 @@ class ProgrammerPanel(QWidget):
             sc.setWidget(w)
             self.tabs.addTab(sc, feat)
             self.pages[feat] = v
+        self.fx = EffectsPanel(engine)
+        self.fx.changed.connect(self.programmerChanged.emit)
+        fx_scroll = QScrollArea()
+        fx_scroll.setWidgetResizable(True)
+        fx_scroll.setWidget(self.fx)
+        self.tabs.addTab(fx_scroll, "Effects ✦")
         lay.addWidget(self.tabs, 1)
 
         bl = QHBoxLayout()
@@ -183,7 +190,7 @@ class ProgrammerPanel(QWidget):
         b_clear.clicked.connect(self.clear)
         b_sel = QPushButton("Clear values (keep selection)")
         b_sel.clicked.connect(lambda: (self.engine.clear_programmer(False), self.refresh(),
-                                       self.programmerChanged.emit()))
+                                       self.fx.refresh(), self.programmerChanged.emit()))
         for b in (b_store, b_sel, b_clear):
             bl.addWidget(b)
         lay.addLayout(bl)
@@ -324,5 +331,6 @@ class ProgrammerPanel(QWidget):
     def clear(self) -> None:
         self.engine.clear_programmer(True)
         self.btn_hl.setChecked(False)
+        self.fx.refresh()
         self.rebuild()
         self.programmerChanged.emit()

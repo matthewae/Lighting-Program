@@ -15,8 +15,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+import copy
+
 from .attributes import HTP_ATTRS
-from .model import Fixture, FixtureType, Playback, Show, Step
+from .effects import apply_effect
+from .model import Effect, Fixture, FixtureType, Playback, Show, Step
 
 COLOUR_ATTRS = {"red", "green", "blue", "white", "amber", "uv"}
 
@@ -58,6 +61,9 @@ class Engine:
         self.states: list[PlaybackState] = []
         self.universes: dict[int, bytearray] = {}
         self.listeners: list[Callable[[], None]] = []
+        self.effects: list[Effect] = []          # programmer effects (live)
+        self.clock = 0.0                          # effect time base (seconds)
+        self._eff_start: dict[int, float] = {}
         self._stamp = 0.0
         self.set_show(show)
 
@@ -143,6 +149,7 @@ class Engine:
     def clear_programmer(self, selection_too: bool = True) -> None:
         with self.lock:
             self.programmer.clear()
+            self.effects.clear()
             if selection_too:
                 self.selection.clear()
 
@@ -236,13 +243,30 @@ class Engine:
         st.t_step = 0.0
         self._bump(st)
 
+    def _times(self, st: PlaybackState, step: Step) -> tuple[float, float, float, float]:
+        """(delay_in, fade_in, delay_out, fade_out) in seconds, after speed factor."""
+        sf = max(st.speed_factor, 0.01)
+        fi = step.fade if step.fade > 0 else st.pb.fade
+        fo = step.fade_out if step.fade_out >= 0 else fi
+        di = max(0.0, step.delay)
+        do = step.delay_out if step.delay_out >= 0 else di
+        return di / sf, max(0.0, fi) / sf, max(0.0, do) / sf, max(0.0, fo) / sf
+
     def _fade_time(self, st: PlaybackState, step: Step) -> float:
-        f = step.fade if step.fade > 0 else st.pb.fade
-        return max(0.0, f) / max(st.speed_factor, 0.01)
+        di, fi, do, fo = self._times(st, step)
+        return max(di + fi, do + fo)
 
     def _hold_time(self, st: PlaybackState, step: Step) -> float:
         h = step.hold if step.hold >= 0 else st.pb.speed
         return max(0.02, h) / max(st.speed_factor, 0.01)
+
+    @staticmethod
+    def _progress(t: float, delay: float, fade: float) -> float:
+        if t < delay:
+            return 0.0
+        if fade <= 0:
+            return 1.0
+        return min(1.0, (t - delay) / fade)
 
     def _advance(self, st: PlaybackState, dt: float) -> None:
         step = st.step()
@@ -250,23 +274,22 @@ class Engine:
             return
         if not st.paused:
             st.t_step += dt
-        fade = self._fade_time(st, step)
+        di, fi, do, fo = self._times(st, step)
+        k_in = self._progress(st.t_step, di, fi)
+        k_out = self._progress(st.t_step, do, fo)
         target = {(f, c): v for f, chans in step.values.items() for c, v in chans.items()}
-        if fade <= 0 or st.t_step >= fade:
-            k = 1.0
-        else:
-            k = st.t_step / fade
         out = {}
         for key, v in target.items():
-            a = st.src.get(key, 0 if self._is_htp(key) else v)
+            htp = self._is_htp(key)
+            a = st.src.get(key, 0 if htp else v)
+            k = k_out if (htp and v < a) else k_in      # intensity going down uses fade out
             out[key] = round(a + (v - a) * k)
-        if k < 1.0:   # fade out values not present in the new step (intensity only)
-            for key, a in st.src.items():
-                if key not in target and self._is_htp(key):
-                    out[key] = round(a * (1 - k))
+        for key, a in st.src.items():                    # intensity not in the new step fades out
+            if key not in target and self._is_htp(key) and k_out < 1.0:
+                out[key] = round(a * (1 - k_out))
         st.out = out
         if st.pb.mode == "chase" and len(st.pb.steps) > 1 and not st.paused:
-            if st.t_step >= max(fade, self._hold_time(st, step)):
+            if st.t_step >= max(self._fade_time(st, step), self._hold_time(st, step)):
                 self._goto(st, (st.index + 1) % len(st.pb.steps))
 
     def _is_htp(self, key: tuple[int, int]) -> bool:
@@ -278,8 +301,21 @@ class Engine:
         return ch < len(chans) and chans[ch].attr in HTP_ATTRS
 
     # ------------------------------------------------------------------ tick
+    def add_effect(self, eff: Effect) -> Effect:
+        with self.lock:
+            self.effects.append(eff)
+            self._eff_start[id(eff)] = self.clock
+        return eff
+
+    def remove_effect(self, eff: Effect) -> None:
+        with self.lock:
+            if eff in self.effects:
+                self.effects.remove(eff)
+
     def tick(self, dt: float) -> dict[int, bytearray]:
         with self.lock:
+            self.clock += dt
+            t = self.clock
             for st in self.states:
                 if st.running:
                     self._advance(st, dt)
@@ -310,11 +346,18 @@ class Engine:
                 for i in range(n):
                     if htp_set[i]:
                         vals[i] = round(htp[i])
+                for st in active:      # effects stored in the running steps
+                    step = st.step()
+                    if step and step.effects:
+                        for eff in step.effects:
+                            apply_effect(eff, ft, fx.fid, vals, t, st.effective_level, st.t_step)
                 prog = self.programmer.get(fx.fid)
                 if prog:
                     for i, v in prog.items():
                         if i < n:
                             vals[i] = v
+                for eff in self.effects:
+                    apply_effect(eff, ft, fx.fid, vals, t, 1.0, t - self._eff_start.get(id(eff), 0.0))
                 if self.highlight and fx.fid in self.selection:
                     self._apply_highlight(ft, vals)
                 if gm < 1.0:
@@ -349,8 +392,9 @@ class Engine:
         """Store programmer into ``pb``: mode add | overwrite | merge."""
         with self.lock:
             vals = self.snapshot_programmer()
+            effs = copy.deepcopy(self.effects)
             if mode == "add" or not pb.steps:
-                st = Step(name=f"Step {len(pb.steps) + 1}", values=vals, fade=fade)
+                st = Step(name=f"Step {len(pb.steps) + 1}", values=vals, fade=fade, effects=effs)
                 if index is None or index >= len(pb.steps):
                     pb.steps.append(st)
                 else:
@@ -361,9 +405,15 @@ class Engine:
             if mode == "merge":
                 for f, chans in vals.items():
                     st.values.setdefault(f, {}).update(chans)
+                st.effects += effs
             else:
                 st.values = vals
+                st.effects = effs
             return st
+
+    @property
+    def programmer_empty(self) -> bool:
+        return not any(self.programmer.values()) and not self.effects
 
 
 class EngineRunner(threading.Thread):

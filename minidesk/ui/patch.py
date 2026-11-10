@@ -1,18 +1,40 @@
-"""Patch table, add-fixture dialog and fixture type editor."""
+"""Patch table + fixture inspector, add-fixture dialog and fixture type editor."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButtonBox,
-                               QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
-                               QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+                               QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
+                               QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QSplitter,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..attributes import FEATURE_OF
 from ..engine import Engine
-from ..layout import auto_layout
-from ..model import Fixture, FixtureType, builtin_types
+from ..model import MODEL_KINDS, Fixture, FixtureType, Show, builtin_types
+from .fixture_models import model_icon
 
-COLS = ["ID", "Name", "Type", "Univ", "Addr", "Ch", "X (m)", "Y (m)", "Z (m)", "Mount", "Yaw°", "Aim°"]
+COLS = ["ID", "Name", "Type", "Model", "Univ", "Addr", "Ch"]
+NAME_MAX = 16
+
+
+def is_console_show(show: Show) -> bool:
+    return bool(show.source_path)
+
+
+def allowed_types(show: Show) -> list[FixtureType]:
+    if is_console_show(show):
+        return sorted((t for t in show.types.values() if t.lib_index >= 0), key=lambda t: t.lib_index)
+    return sorted(show.types.values(), key=lambda t: t.key)
+
+
+def free_address(show: Show, n: int, universe: int = 0, ignore: int | None = None) -> int:
+    used = set()
+    for fx in show.fixtures:
+        if fx.patched and fx.universe == universe and fx.fid != ignore:
+            used.update(range(fx.address, fx.address + len(show.ftype(fx).channels)))
+    for a in range(1, 514 - n):
+        if not used & set(range(a, a + n)):
+            return a
+    return 0
 
 
 class AddFixtureDialog(QDialog):
@@ -21,58 +43,72 @@ class AddFixtureDialog(QDialog):
         self.setWindowTitle("Add fixtures")
         self.engine = engine
         show = engine.show
-        for t in builtin_types():
-            if t.key not in show.types:
-                show.add_type(t)
+        if not is_console_show(show):
+            for t in builtin_types():
+                if t.key not in show.types:
+                    show.add_type(t)
         f = QFormLayout(self)
+        if is_console_show(show):
+            note = QLabel("Console file: only fixture types from the console library can be saved into "
+                          "the .SHO. (New profiles must be created on the console first.)")
+            note.setWordWrap(True)
+            f.addRow(note)
         self.type = QComboBox()
-        self.type.addItems(sorted(show.types))
+        for t in allowed_types(show):
+            self.type.addItem(model_icon(t.kind), f"{t.name}  ({t.manufacturer}, {len(t.channels)} ch)", t.key)
         self.count = QSpinBox()
         self.count.setRange(1, 128)
         self.name = QLineEdit()
+        self.name.setMaxLength(NAME_MAX)
         self.fid = QSpinBox()
-        self.fid.setRange(1, 9999)
+        self.fid.setRange(1, 512)
         self.fid.setValue(show.next_fid())
         self.uni = QSpinBox()
-        self.uni.setRange(1, 64)
+        self.uni.setRange(1, 4 if is_console_show(show) else 64)
         self.addr = QSpinBox()
         self.addr.setRange(1, 512)
-        self.addr.setValue(self._free_address())
+        self.type.currentIndexChanged.connect(self._auto_addr)
+        self.uni.valueChanged.connect(self._auto_addr)
         f.addRow("Fixture type", self.type)
         f.addRow("Quantity", self.count)
         f.addRow("Name (empty = type)", self.name)
-        f.addRow("First fixture ID", self.fid)
+        f.addRow("First fixture number", self.fid)
         f.addRow("Universe", self.uni)
-        f.addRow("Start address", self.addr)
+        f.addRow("Start address (auto = first free)", self.addr)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         f.addRow(bb)
+        self._auto_addr()
 
-    def _free_address(self) -> int:
-        end = 0
-        for fx in self.engine.show.fixtures:
-            if fx.patched and fx.universe == 0:
-                end = max(end, fx.address + len(self.engine.show.ftype(fx).channels) - 1)
-        return min(512, end + 1)
+    def _ft(self) -> FixtureType:
+        return self.engine.show.types[self.type.currentData()]
 
-    def apply(self) -> None:
+    def _auto_addr(self, *_):
+        if self.type.count():
+            self.addr.setValue(max(1, free_address(self.engine.show, len(self._ft().channels),
+                                                   self.uni.value() - 1)))
+
+    def apply(self) -> list[int]:
         show = self.engine.show
-        ft = show.types[self.type.currentText()]
+        ft = self._ft()
         addr, fid = self.addr.value(), self.fid.value()
+        made = []
         for i in range(self.count.value()):
             while show.fixture(fid):
                 fid += 1
             nm = self.name.text() or ft.name
             if self.count.value() > 1:
-                nm = f"{nm} {i + 1}"
+                nm = f"{nm[:NAME_MAX - 3]} {i + 1}"
+            ok = addr + len(ft.channels) - 1 <= 512
             fx = Fixture(fid=fid, name=nm, type_key=ft.key, universe=self.uni.value() - 1,
-                         address=addr if addr + len(ft.channels) - 1 <= 512 else 0,
-                         x=-5 + (i % 11), y=3.0, z=5.0)
+                         address=addr if ok else 0, x=-5 + (i % 11), y=3.0, z=5.0)
             show.fixtures.append(fx)
+            made.append(fid)
             addr += len(ft.channels)
             fid += 1
         show.fixtures.sort(key=lambda f: f.fid)
+        return made
 
 
 class TypeEditor(QDialog):
@@ -82,12 +118,13 @@ class TypeEditor(QDialog):
         super().__init__(parent)
         self.ft = ft
         self.setWindowTitle(f"Fixture type: {ft.key}")
-        self.resize(560, 600)
+        self.resize(600, 640)
         lay = QVBoxLayout(self)
         form = QFormLayout()
         self.kind = QComboBox()
-        self.kind.addItems(["par", "moving", "strobe", "fresnel", "fog", "generic"])
-        self.kind.setCurrentText(ft.kind)
+        for k, label in MODEL_KINDS.items():
+            self.kind.addItem(model_icon(k), label, k)
+        self.kind.setCurrentIndex(max(0, self.kind.findData(ft.kind)))
         self.beam = QDoubleSpinBox()
         self.beam.setRange(1, 120)
         self.beam.setValue(ft.beam_angle)
@@ -97,18 +134,24 @@ class TypeEditor(QDialog):
         self.tilt = QDoubleSpinBox()
         self.tilt.setRange(0, 360)
         self.tilt.setValue(ft.tilt_range)
-        form.addRow("Kind", self.kind)
+        form.addRow("3D model", self.kind)
         form.addRow("Beam angle (°)", self.beam)
         form.addRow("Pan range (°)", self.pan)
         form.addRow("Tilt range (°)", self.tilt)
         lay.addLayout(form)
-        lay.addWidget(QLabel("Channels – the attribute tells the visualizer/programmer what a channel does"))
+        lab = QLabel("Channels – the attribute tells the visualizer/programmer what a channel does. "
+                     "These are MiniDesk settings; the console's own profile is not changed.")
+        lab.setWordWrap(True)
+        lay.addWidget(lab)
         self.table = QTableWidget(len(ft.channels), 3)
         self.table.setHorizontalHeaderLabels(["Name", "Attribute", "Default"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.combos = []
         for r, ch in enumerate(ft.channels):
-            self.table.setItem(r, 0, QTableWidgetItem(ch.name))
+            it = QTableWidgetItem(ch.name)
+            if ft.lib_index >= 0:
+                it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(r, 0, it)
             cb = QComboBox()
             cb.addItems(self.ATTRS)
             cb.setCurrentText(ch.attr)
@@ -124,7 +167,7 @@ class TypeEditor(QDialog):
 
     def apply(self) -> None:
         ft = self.ft
-        ft.kind, ft.beam_angle = self.kind.currentText(), self.beam.value()
+        ft.kind, ft.beam_angle = self.kind.currentData(), self.beam.value()
         ft.pan_range, ft.tilt_range = self.pan.value(), self.tilt.value()
         for r, ch in enumerate(ft.channels):
             ch.name = self.table.item(r, 0).text()
@@ -137,103 +180,201 @@ class TypeEditor(QDialog):
 
 class PatchPanel(QWidget):
     changed = Signal()
+    selectFixtures = Signal(list)
 
     def __init__(self, engine: Engine, parent=None):
         super().__init__(parent)
         self.engine = engine
+        self._loading = False
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
         self.info = QLabel("")
+        self.info.setWordWrap(True)
         lay.addWidget(self.info)
+        split = QSplitter(Qt.Horizontal)
         self.table = QTableWidget(0, len(COLS))
         self.table.setHorizontalHeaderLabels(COLS)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        hh = self.table.horizontalHeader()
+        for c in range(len(COLS)):
+            hh.setSectionResizeMode(c, QHeaderView.Stretch if c == 1 else QHeaderView.ResizeToContents)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
-        self.table.itemChanged.connect(self._edited)
-        lay.addWidget(self.table, 1)
+        self.table.verticalHeader().setVisible(False)
+        self.table.itemSelectionChanged.connect(self._row_selected)
+        split.addWidget(self.table)
+
+        insp = QGroupBox("Fixture")
+        f = QFormLayout(insp)
+        self.e_name = QLineEdit()
+        self.e_name.setMaxLength(NAME_MAX)
+        self.e_type = QComboBox()
+        self.e_uni = QSpinBox()
+        self.e_uni.setRange(1, 64)
+        self.e_addr = QSpinBox()
+        self.e_addr.setRange(0, 512)
+        self.e_addr.setSpecialValueText("not patched")
+        self.l_end = QLabel("")
+        b_free = QPushButton("Next free address")
+        b_free.clicked.connect(self._next_free)
+        b_unpatch = QPushButton("Unpatch")
+        b_unpatch.clicked.connect(lambda: self.e_addr.setValue(0))
+        self.b_apply = QPushButton("Apply")
+        self.b_apply.setObjectName("go")
+        self.b_apply.clicked.connect(self._apply_inspector)
+        f.addRow("Name", self.e_name)
+        f.addRow("Type", self.e_type)
+        f.addRow("Universe", self.e_uni)
+        f.addRow("Address", self.e_addr)
+        f.addRow("", self.l_end)
+        r = QHBoxLayout()
+        r.addWidget(b_free)
+        r.addWidget(b_unpatch)
+        f.addRow(r)
+        f.addRow(self.b_apply)
+        tip = QLabel("Position & aim: use the <b>Stage Layout</b> tab.")
+        tip.setWordWrap(True)
+        f.addRow(tip)
+        self.e_addr.valueChanged.connect(self._end_label)
+        self.e_type.currentIndexChanged.connect(self._end_label)
+        split.addWidget(insp)
+        split.setSizes([620, 280])
+        lay.addWidget(split, 1)
+
         b = QHBoxLayout()
-        for text, fn in (("Add fixtures…", self.add), ("Remove selected", self.remove),
-                         ("Edit fixture type…", self.edit_type), ("Auto layout stage", self.layout_stage)):
+        for text, fn in (("Add fixtures…", self.add), ("Remove / unpatch", self.remove),
+                         ("Edit fixture type && 3D model…", self.edit_type)):
             btn = QPushButton(text)
             btn.clicked.connect(fn)
             b.addWidget(btn)
         b.addStretch(1)
         lay.addLayout(b)
-        self._loading = False
         self.rebuild()
 
+    # ----------------------------------------------------------------- table
     def rebuild(self) -> None:
         self._loading = True
         show = self.engine.show
         self.table.setRowCount(len(show.fixtures))
         for r, fx in enumerate(show.fixtures):
             ft = show.ftype(fx)
-            vals = [fx.fid, fx.name, ft.key, fx.universe + 1, fx.address, len(ft.channels),
-                    f"{fx.x:.2f}", f"{fx.y:.2f}", f"{fx.z:.2f}", fx.mount, f"{fx.rot:g}", f"{fx.aim:g}"]
+            vals = [fx.fid, fx.name, ft.name, ft.model_label, fx.universe + 1,
+                    fx.address if fx.patched else "—", len(ft.channels)]
             for c, v in enumerate(vals):
                 it = QTableWidgetItem(str(v))
-                if c in (0, 2, 5):
-                    it.setFlags(it.flags() & ~Qt.ItemIsEditable)
-                if c == 4 and not fx.patched:
-                    it.setText("0")
+                if c == 3:
+                    it.setIcon(model_icon(ft.kind, 20))
+                if c == 5 and not fx.patched:
                     it.setForeground(Qt.red)
                 self.table.setItem(r, c, it)
+        self.e_type.blockSignals(True)
+        self.e_type.clear()
+        for t in allowed_types(show):
+            self.e_type.addItem(model_icon(t.kind), t.name, t.key)
+        self.e_type.blockSignals(False)
         conf = show.patch_conflicts()
         ci = show.console_info
-        txt = f"{len(show.fixtures)} fixtures, {len(show.types)} types"
-        if ci:
-            txt += f"   |   imported from {ci.get('console', '')}  (console IP {ci.get('ip', '?')})"
+        txt = f"{len(show.fixtures)} fixtures, {len(show.types)} types."
+        if is_console_show(show):
+            txt += (f"  Console file <b>{show.source_path.replace(chr(92), '/').split('/')[-1]}</b> "
+                    f"({ci.get('console', '')}, IP {ci.get('ip', '?')}): names, types and addresses are "
+                    f"saved directly into the .SHO.")
         if conf:
-            txt += f"   |   ⚠ address overlap: {conf[:5]}"
-        self.info.setText(txt + "   |   address 0 = not patched")
+            txt += f"  <span style='color:#f66'>⚠ address overlap between fixtures {conf[:5]}</span>"
+        self.info.setText(txt)
         self._loading = False
+        self._row_selected()
 
-    def _edited(self, it: QTableWidgetItem) -> None:
+    def _current(self) -> Fixture | None:
+        r = self.table.currentRow()
+        fx = self.engine.show.fixtures
+        return fx[r] if 0 <= r < len(fx) else None
+
+    def _row_selected(self) -> None:
         if self._loading:
             return
-        fx = self.engine.show.fixtures[it.row()]
-        t = it.text().strip()
-        try:
-            c = it.column()
-            if c == 1:
-                fx.name = t
-            elif c == 3:
-                fx.universe = max(0, int(t) - 1)
-            elif c == 4:
-                fx.address = max(0, min(512, int(t)))
-            elif c == 6:
-                fx.x = float(t)
-            elif c == 7:
-                fx.y = float(t)
-            elif c == 8:
-                fx.z = float(t)
-            elif c == 9:
-                fx.mount = "floor" if t.lower().startswith("f") else "hang"
-            elif c == 10:
-                fx.rot = float(t)
-            elif c == 11:
-                fx.aim = float(t)
-        except ValueError:
-            pass
+        fx = self._current()
+        for w in (self.e_name, self.e_type, self.e_uni, self.e_addr, self.b_apply):
+            w.setEnabled(fx is not None)
+        if not fx:
+            return
+        self.e_name.setText(fx.name)
+        self.e_type.setCurrentIndex(max(0, self.e_type.findData(fx.type_key)))
+        self.e_uni.setRange(1, 4 if is_console_show(self.engine.show) else 64)
+        self.e_uni.setValue(fx.universe + 1)
+        self.e_addr.setValue(fx.address)
+        rows = sorted({i.row() for i in self.table.selectedIndexes()})
+        fids = [self.engine.show.fixtures[r].fid for r in rows]
+        if fids:
+            self.selectFixtures.emit(fids)
+
+    def _end_label(self, *_):
+        key = self.e_type.currentData()
+        if not key:
+            return
+        n = len(self.engine.show.types[key].channels)
+        a = self.e_addr.value()
+        self.l_end.setText(f"uses {n} channels: {a}–{a + n - 1}" if a else f"{n} channels, not patched")
+
+    def _next_free(self):
+        fx = self._current()
+        key = self.e_type.currentData()
+        if fx and key:
+            n = len(self.engine.show.types[key].channels)
+            self.e_addr.setValue(free_address(self.engine.show, n, self.e_uni.value() - 1, fx.fid))
+
+    def _apply_inspector(self):
+        fx = self._current()
+        if not fx:
+            return
+        show = self.engine.show
+        ft = show.types[self.e_type.currentData()]
+        a = self.e_addr.value()
+        if a and a + len(ft.channels) - 1 > 512:
+            QMessageBox.warning(self, "Patch", "The fixture does not fit in the universe at this address.")
+            return
+        old = (fx.name, fx.type_key, fx.universe, fx.address)
+        fx.name = self.e_name.text().strip() or ft.name
+        fx.type_key, fx.universe, fx.address = ft.key, self.e_uni.value() - 1, a
+        conf = [c for c in show.patch_conflicts() if fx.fid in c]
+        if conf:
+            fx.name, fx.type_key, fx.universe, fx.address = old
+            QMessageBox.warning(self, "Patch", f"Address overlaps another fixture: {conf[:3]}")
+            return
+        r = self.table.currentRow()
         self.engine.rebuild_patch()
+        self.rebuild()
+        self.table.selectRow(r)
         self.changed.emit()
 
+    # --------------------------------------------------------------- actions
     def add(self) -> None:
         d = AddFixtureDialog(self.engine, self)
         if d.exec():
-            d.apply()
+            made = d.apply()
             self.engine.rebuild_patch()
             self.rebuild()
+            self.selectFixtures.emit(made)
             self.changed.emit()
 
     def remove(self) -> None:
         rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
         if not rows:
             return
-        if QMessageBox.question(self, "Remove", f"Remove {len(rows)} fixture(s)?") != QMessageBox.Yes:
-            return
         show = self.engine.show
+        if is_console_show(show):
+            olds = [r for r in rows if show.fixtures[r].slot >= 0]
+            if olds and QMessageBox.question(
+                    self, "Unpatch",
+                    f"{len(olds)} fixture(s) come from the console file. Deleting them is not supported "
+                    "(cues in the console may use them) – unpatch them instead (address = none)?") \
+                    != QMessageBox.Yes:
+                return
+            for r in olds:
+                show.fixtures[r].address = 0
+            rows = [r for r in rows if show.fixtures[r].slot < 0]
+        elif QMessageBox.question(self, "Remove", f"Remove {len(rows)} fixture(s)?") != QMessageBox.Yes:
+            return
         for r in rows:
             fid = show.fixtures[r].fid
             del show.fixtures[r]
@@ -251,20 +392,13 @@ class PatchPanel(QWidget):
         self.changed.emit()
 
     def edit_type(self) -> None:
-        r = self.table.currentRow()
-        show = self.engine.show
-        if r < 0:
+        fx = self._current()
+        if not fx:
             QMessageBox.information(self, "Fixture type", "Select a fixture row first.")
             return
-        ft = show.ftype(show.fixtures[r])
-        d = TypeEditor(ft, self)
+        d = TypeEditor(self.engine.show.ftype(fx), self)
         if d.exec():
             d.apply()
             self.engine.rebuild_patch()
             self.rebuild()
             self.changed.emit()
-
-    def layout_stage(self) -> None:
-        auto_layout(self.engine.show)
-        self.rebuild()
-        self.changed.emit()

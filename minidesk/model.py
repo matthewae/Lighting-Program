@@ -36,7 +36,8 @@ class FixtureType:
     beam_angle: float = 25.0      # degrees, default beam spread
     pan_range: float = 540.0      # degrees
     tilt_range: float = 270.0     # degrees
-    kind: str = "par"             # par, moving, strobe, fresnel, fog, generic
+    kind: str = "par"             # visual model, see MODEL_KINDS
+    lib_index: int = -1           # index in the console fixture library (-1 = not from console)
 
     @property
     def key(self) -> str:
@@ -45,6 +46,10 @@ class FixtureType:
     @property
     def is_moving(self) -> bool:
         return any(c.attr in ("pan", "tilt") for c in self.channels)
+
+    @property
+    def model_label(self) -> str:
+        return MODEL_KINDS.get(self.kind, self.kind)
 
     def find(self, attr: str) -> list[int]:
         return [i for i, c in enumerate(self.channels) if c.attr == attr]
@@ -55,8 +60,16 @@ class FixtureType:
         if attrs & {"fog"} or "haze" in n or "fog" in n or "df-" in n:
             self.kind, self.beam_angle = "fog", 60
         elif self.is_moving:
-            self.kind = "moving"
-            self.beam_angle = 4 if ("beam" in n or "bsw" in n or "280" in n) else 15
+            if "beam" in n or "bsw" in n or "280" in n or "230" in n:
+                self.kind, self.beam_angle = "beam", 4
+            elif "wash" in n:
+                self.kind, self.beam_angle = "wash", 25
+            else:
+                self.kind, self.beam_angle = "spot", 15
+        elif "blinder" in n:
+            self.kind, self.beam_angle = "blinder", 70
+        elif "bar" in n:
+            self.kind, self.beam_angle = "ledbar", 30
         elif "strob" in n:
             self.kind, self.beam_angle = "strobe", 100
         elif "fresnel" in n or "fresnell" in n:
@@ -72,6 +85,22 @@ class FixtureType:
                     c.default = 255
 
 
+# Visual models a fixture type can be drawn as.
+MODEL_KINDS = {
+    "beam": "Moving head – Beam",
+    "spot": "Moving head – Spot",
+    "wash": "Moving head – Wash",
+    "par": "LED PAR",
+    "fresnel": "Fresnel / Profile",
+    "strobe": "Strobe",
+    "ledbar": "LED bar",
+    "blinder": "Blinder",
+    "fog": "Fog / Hazer",
+    "generic": "Generic",
+}
+MOVING_KINDS = {"beam", "spot", "wash"}
+
+
 @dataclass
 class Fixture:
     fid: int                      # fixture number (1 based, shown to the user)
@@ -85,6 +114,7 @@ class Fixture:
     mount: str = "hang"           # hang | floor
     rot: float = 0.0              # yaw in degrees (0 = facing the audience / downstage)
     aim: float = 30.0             # fixed fixtures: tilt from straight down/up toward 'rot'
+    slot: int = -1                # fixture index in the console file (-1 = new)
 
     @property
     def patched(self) -> bool:
@@ -95,26 +125,83 @@ class Fixture:
 class Group:
     name: str
     fixtures: list[int] = field(default_factory=list)   # fixture ids
+    slot: int = -1                                       # group slot in the console file
+
+
+EFFECT_TYPES = {
+    # key: (label, feature)
+    "circle": ("Circle", "Position"),
+    "figure8": ("Figure 8", "Position"),
+    "pan_wave": ("Pan wave", "Position"),
+    "tilt_wave": ("Tilt wave", "Position"),
+    "ballyhoo": ("Ballyhoo (random sweep)", "Position"),
+    "dim_sine": ("Dimmer sine", "Intensity"),
+    "dim_pulse": ("Dimmer pulse / ramp", "Intensity"),
+    "dim_chase": ("Dimmer chase (on/off)", "Intensity"),
+    "dim_random": ("Dimmer random", "Intensity"),
+    "strobe": ("Strobe flash", "Intensity"),
+    "rainbow": ("Rainbow", "Color"),
+    "color_chase": ("Color chase (2 colours)", "Color"),
+}
+
+
+@dataclass
+class Effect:
+    type: str = "circle"
+    fixtures: list[int] = field(default_factory=list)
+    speed: float = 0.5            # cycles per second
+    size: float = 40.0            # position: DMX amplitude, intensity: depth % (0..100)
+    spread: float = 360.0         # phase spread across fixtures (degrees)
+    wings: int = 1                # mirror groups
+    low: int = 0                  # intensity low value (0..255)
+    high: int = 255               # intensity high value (0..255)
+    color_a: tuple = (255, 0, 0)
+    color_b: tuple = (0, 0, 255)
+    reverse: bool = False
+    offset: float = 0.0           # phase offset of the whole effect (degrees)
+    duty: float = 0.5             # on-time fraction for chase / strobe (0..1)
+    fade: float = 0.0             # seconds to ramp the effect in when it starts
+
+    def to_json(self) -> dict:
+        d = asdict(self)
+        d["color_a"], d["color_b"] = list(self.color_a), list(self.color_b)
+        return d
+
+    @staticmethod
+    def from_json(d: dict) -> "Effect":
+        d = dict(d)
+        d["color_a"] = tuple(d.get("color_a", (255, 0, 0)))
+        d["color_b"] = tuple(d.get("color_b", (0, 0, 255)))
+        return Effect(**{k: v for k, v in d.items() if k in Effect.__dataclass_fields__})
 
 
 @dataclass
 class Step:
     name: str = ""
     values: dict[int, dict[int, int]] = field(default_factory=dict)   # fid -> {chan: value}
-    fade: float = 0.0          # seconds
+    fade: float = 0.0          # fade in (seconds)
     hold: float = -1.0         # seconds, -1 = use playback speed
+    effects: list[Effect] = field(default_factory=list)
+    fade_out: float = -1.0     # fade out for intensity going down, -1 = same as fade
+    delay: float = 0.0         # delay before the fade in starts
+    delay_out: float = -1.0    # delay before the fade out starts, -1 = same as delay
 
     def to_json(self) -> dict:
         return {
             "name": self.name, "fade": self.fade, "hold": self.hold,
+            "fade_out": self.fade_out, "delay": self.delay, "delay_out": self.delay_out,
             "values": {str(f): {str(c): v for c, v in ch.items()} for f, ch in self.values.items()},
+            "effects": [e.to_json() for e in self.effects],
         }
 
     @staticmethod
     def from_json(d: dict) -> "Step":
         return Step(
             name=d.get("name", ""), fade=float(d.get("fade", 0)), hold=float(d.get("hold", -1)),
+            fade_out=float(d.get("fade_out", -1)), delay=float(d.get("delay", 0)),
+            delay_out=float(d.get("delay_out", -1)),
             values={int(f): {int(c): int(v) for c, v in ch.items()} for f, ch in d.get("values", {}).items()},
+            effects=[Effect.from_json(e) for e in d.get("effects", [])],
         )
 
 
@@ -128,11 +215,12 @@ class Playback:
     number: int = 0            # executor number
     bank: str = "Playback"     # label of origin (Fixed / Playback / User)
     source: str = ""           # info about where it was imported from
+    slot: int = -1             # record index in the console file (-1 = not from console)
 
     def to_json(self) -> dict:
         return {
             "name": self.name, "mode": self.mode, "speed": self.speed, "fade": self.fade,
-            "number": self.number, "bank": self.bank, "source": self.source,
+            "number": self.number, "bank": self.bank, "source": self.source, "slot": self.slot,
             "steps": [s.to_json() for s in self.steps],
         }
 
@@ -141,7 +229,7 @@ class Playback:
         return Playback(
             name=d["name"], mode=d.get("mode", "chase"), speed=float(d.get("speed", 1)),
             fade=float(d.get("fade", 0)), number=int(d.get("number", 0)),
-            bank=d.get("bank", "Playback"), source=d.get("source", ""),
+            bank=d.get("bank", "Playback"), source=d.get("source", ""), slot=int(d.get("slot", -1)),
             steps=[Step.from_json(s) for s in d.get("steps", [])],
         )
 
@@ -174,6 +262,7 @@ class Show:
     stage_depth: float = 8.0
     stage_height: float = 6.0
     console_info: dict = field(default_factory=dict)
+    source_path: str = ""          # console .SHO file this show was imported from
 
     # ---------------------------------------------------------------- lookup
     def fixture(self, fid: int) -> Optional[Fixture]:
@@ -221,6 +310,7 @@ class Show:
             "playbacks": [p.to_json() for p in self.playbacks],
             "output": asdict(self.output),
             "console_info": self.console_info,
+            "source_path": self.source_path,
         }
 
     @staticmethod
@@ -240,6 +330,7 @@ class Show:
             s.output = OutputConfig(**{k: v for k, v in d["output"].items()
                                        if k in OutputConfig.__dataclass_fields__})
         s.console_info = d.get("console_info", {})
+        s.source_path = d.get("source_path", "")
         return s
 
     def save(self, path: str) -> None:
