@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import copy
+import random
 
 from .attributes import HTP_ATTRS
 from .effects import apply_effect
@@ -37,10 +38,16 @@ class PlaybackState:
     src: dict[tuple[int, int], int] = field(default_factory=dict)
     out: dict[tuple[int, int], int] = field(default_factory=dict)
     speed_factor: float = 1.0
+    bounce: int = 1             # current bounce direction
+    releasing: float = -1.0     # >= 0: seconds into the release fade
+    taps: list = field(default_factory=list)
 
     @property
     def effective_level(self) -> float:
-        return 1.0 if self.flash else self.level
+        lvl = 1.0 if self.flash else self.level
+        if self.releasing >= 0 and self.pb.release > 0:
+            lvl *= max(0.0, 1.0 - self.releasing / self.pb.release)
+        return lvl
 
     def step(self) -> Optional[Step]:
         if 0 <= self.index < len(self.pb.steps):
@@ -165,47 +172,101 @@ class Engine:
         self._stamp += 1
         st.stamp = self._stamp
 
+    def _first_index(self, st: PlaybackState) -> int:
+        st.bounce = 1
+        return len(st.pb.steps) - 1 if st.pb.direction == "backward" else 0
+
+    def _next_index(self, st: PlaybackState, forward: bool = True) -> Optional[int]:
+        """Next step honouring direction / bounce / random / loop. None = end reached."""
+        n = len(st.pb.steps)
+        if n == 0:
+            return None
+        if n == 1:
+            return 0 if st.pb.loop else None
+        i, d = st.index, st.pb.direction
+        if d == "random":
+            return random.choice([k for k in range(n) if k != i])
+        if d == "bounce":
+            step = st.bounce if forward else -st.bounce
+            j = i + step
+            if not 0 <= j < n:
+                if not st.pb.loop and forward:
+                    return None
+                st.bounce = -st.bounce if forward else st.bounce
+                j = i - step
+            return max(0, min(n - 1, j))
+        step = 1 if (d == "forward") == forward else -1
+        j = i + step
+        if not 0 <= j < n:
+            if not st.pb.loop:
+                return None
+            j %= n
+        return j
+
+    def _start(self, st: PlaybackState) -> None:
+        st.running, st.paused, st.releasing = True, False, -1.0
+        if st.level <= 0 and not st.flash:
+            st.level = 1.0
+        self._goto(st, self._first_index(st))
+
     def go(self, st: PlaybackState) -> None:
         with self.lock:
             if not st.pb.steps:
                 return
             if st.level <= 0 and not st.flash:
                 st.level = 1.0
-            if not st.running:
-                st.running, st.paused = True, False
-                self._goto(st, 0)
+            if not st.running or st.releasing >= 0:
+                self._start(st)
             else:
                 st.paused = False
-                self._goto(st, (st.index + 1) % len(st.pb.steps))
+                j = self._next_index(st, True)
+                if j is not None:
+                    self._goto(st, j)
 
     def back(self, st: PlaybackState) -> None:
         with self.lock:
             if not st.pb.steps:
                 return
             if not st.running:
-                st.running = True
-                if st.level <= 0:
-                    st.level = 1.0
-            self._goto(st, (st.index - 1) % len(st.pb.steps))
+                self._start(st)
+                return
+            j = self._next_index(st, False)
+            if j is not None:
+                self._goto(st, j)
 
     def goto(self, st: PlaybackState, index: int) -> None:
         with self.lock:
             if not st.pb.steps:
                 return
             if not st.running:
-                st.running = True
+                st.running, st.releasing = True, -1.0
                 if st.level <= 0:
                     st.level = 1.0
             self._goto(st, max(0, min(index, len(st.pb.steps) - 1)))
+
+    def tap(self, st: PlaybackState) -> float:
+        """Tap tempo: sets the chase speed from the average of the last taps."""
+        now = time.perf_counter()
+        st.taps = [t for t in st.taps if now - t < 4.0] + [now]
+        if len(st.taps) >= 2:
+            iv = [b - a for a, b in zip(st.taps, st.taps[1:])]
+            st.pb.speed = max(0.05, sum(iv) / len(iv))
+        return st.pb.speed
 
     def pause(self, st: PlaybackState) -> None:
         with self.lock:
             st.paused = not st.paused
 
-    def stop(self, st: PlaybackState) -> None:
+    def stop(self, st: PlaybackState, fade: bool = False) -> None:
+        """Stop a playback; with ``fade`` and a release time it fades out first."""
         with self.lock:
+            if fade and st.pb.release > 0 and st.running:
+                if st.releasing < 0:
+                    st.releasing = 0.0
+                return
             st.running = False
             st.paused = False
+            st.releasing = -1.0
             st.index = -1
             st.out.clear()
             st.src.clear()
@@ -216,8 +277,8 @@ class Engine:
             was = st.level
             st.level = level
             if level > 0 and was <= 0 and not st.running and st.pb.steps:
-                st.running = True
-                self._goto(st, 0)
+                self._start(st)
+                st.level = level
             elif level <= 0 and not st.flash and st.running:
                 self.stop(st)
 
@@ -225,8 +286,9 @@ class Engine:
         with self.lock:
             st.flash = on
             if on and not st.running and st.pb.steps:
-                st.running = True
-                self._goto(st, 0)
+                lvl = st.level
+                self._start(st)
+                st.level = lvl
             elif not on and st.level <= 0:
                 self.stop(st)
 
@@ -248,6 +310,9 @@ class Engine:
         sf = max(st.speed_factor, 0.01)
         fi = step.fade if step.fade > 0 else st.pb.fade
         fo = step.fade_out if step.fade_out >= 0 else fi
+        if st.pb.mode == "chase" and st.pb.xfade > 0:      # crossfade as % of the step time
+            h = step.hold if step.hold >= 0 else st.pb.speed
+            fi = fo = h * min(100.0, st.pb.xfade) / 100.0
         di = max(0.0, step.delay)
         do = step.delay_out if step.delay_out >= 0 else di
         return di / sf, max(0.0, fi) / sf, max(0.0, do) / sf, max(0.0, fo) / sf
@@ -288,9 +353,20 @@ class Engine:
             if key not in target and self._is_htp(key) and k_out < 1.0:
                 out[key] = round(a * (1 - k_out))
         st.out = out
-        if st.pb.mode == "chase" and len(st.pb.steps) > 1 and not st.paused:
-            if st.t_step >= max(self._fade_time(st, step), self._hold_time(st, step)):
-                self._goto(st, (st.index + 1) % len(st.pb.steps))
+        if st.paused:
+            return
+        auto = (st.pb.mode == "chase" and len(st.pb.steps) > 1) or (st.pb.mode == "cuelist" and step.follow)
+        if auto:
+            wait = self._hold_time(st, step)
+            if st.pb.mode == "chase" and st.pb.xfade > 0:
+                wait = max(wait, 0.02)
+                ready = st.t_step >= wait
+            else:
+                ready = st.t_step >= max(self._fade_time(st, step), wait)
+            if ready:
+                j = self._next_index(st, True)
+                if j is not None and (j != st.index or st.pb.direction == "random"):
+                    self._goto(st, j)
 
     def _is_htp(self, key: tuple[int, int]) -> bool:
         fid, ch = key
@@ -319,6 +395,11 @@ class Engine:
             for st in self.states:
                 if st.running:
                     self._advance(st, dt)
+                    if st.releasing >= 0:
+                        st.releasing += dt
+                        if st.releasing >= st.pb.release:
+                            self.stop(st)
+                            st.level = 0.0
             for u in self.universes.values():
                 u[:] = bytes(512)
             active = sorted((s for s in self.states if s.running and s.effective_level > 0),
@@ -410,6 +491,45 @@ class Engine:
                 st.values = vals
                 st.effects = effs
             return st
+
+    # -------------------------------------------------------------- presets
+    def apply_preset(self, preset, fids: Optional[list[int]] = None) -> int:
+        """Put a preset into the programmer for the selection. Returns fixtures affected."""
+        with self.lock:
+            targets = fids if fids is not None else (self.selection or list(preset.values))
+            by_type = {}
+            for f, vals in preset.values.items():
+                e = self._by_id.get(f)
+                if e:
+                    by_type.setdefault(e[0].type_key, vals)
+            n = 0
+            for fid in targets:
+                e = self._by_id.get(fid)
+                if not e:
+                    continue
+                vals = preset.values.get(fid) or by_type.get(e[0].type_key)
+                if vals:
+                    self.programmer.setdefault(fid, {}).update(vals)
+                    n += 1
+            return n
+
+    def make_preset(self, name: str, category: str):
+        """Create a preset from the programmer, keeping only channels of ``category``."""
+        from .attributes import FEATURE_OF
+        from .model import Preset
+        with self.lock:
+            vals = {}
+            for fid, chans in self.programmer.items():
+                e = self._by_id.get(fid)
+                if not e:
+                    continue
+                ft = e[1]
+                keep = {c: v for c, v in chans.items() if c < len(ft.channels) and (
+                    category == "All" or FEATURE_OF.get(ft.channels[c].attr.replace("_fine", ""),
+                                                        "Other") == category)}
+                if keep:
+                    vals[fid] = keep
+            return Preset(name=name, category=category, values=vals)
 
     @property
     def programmer_empty(self) -> bool:

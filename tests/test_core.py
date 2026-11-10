@@ -290,3 +290,127 @@ def test_sho_save_rejects_overlap(tmp_path):
     rep = doc.save(show)
     assert rep.errors
     assert p.read_bytes() == open(SAMPLE, "rb").read()
+
+
+# ------------------------------------------------- playback options & presets
+def _chase(direction, loop=True, n=3):
+    s = small_show()
+    pb = Playback(name="D", number=1, mode="chase", speed=0.1, direction=direction, loop=loop,
+                  steps=[Step(values={1: {0: 10 * (i + 1)}}) for i in range(n)])
+    s.playbacks.append(pb)
+    e = Engine(s)
+    return e, e.states[0]
+
+
+def _run(e, st, steps):
+    seen = []
+    for _ in range(steps):
+        e.tick(0.11)
+        seen.append(st.index)
+    return seen
+
+
+def test_chase_directions():
+    e, st = _chase("backward")
+    e.go(st)
+    assert st.index == 2
+    assert _run(e, st, 3) == [1, 0, 2]
+    e, st = _chase("bounce")
+    e.go(st)
+    assert _run(e, st, 5) == [1, 2, 1, 0, 1]
+    e, st = _chase("forward", loop=False)
+    e.go(st)
+    assert _run(e, st, 4) == [1, 2, 2, 2]          # holds on the last step
+
+
+def test_cuelist_follow_and_release():
+    s = small_show()
+    pb = Playback(name="F", number=1, mode="cuelist", release=1.0, steps=[
+        Step(values={1: {0: 255}}, hold=0.2, follow=True), Step(values={1: {0: 100}})])
+    s.playbacks.append(pb)
+    e = Engine(s)
+    st = e.states[0]
+    e.go(st)
+    e.tick(0.1)
+    assert st.index == 0
+    e.tick(0.2)
+    assert st.index == 1                            # followed automatically
+    e.tick(0.1)
+    e.stop(st, fade=True)                           # release fade 1 s
+    e.tick(0.5)
+    assert st.running and 40 <= e.tick(0.0)[0][0] <= 60
+    e.tick(0.6)
+    assert not st.running
+
+
+def test_tap_tempo(monkeypatch):
+    import minidesk.engine as em
+    e, st = _chase("forward")
+    t = [100.0]
+    monkeypatch.setattr(em.time, "perf_counter", lambda: t[0])
+    for _ in range(4):
+        e.tap(st)
+        t[0] += 0.5
+    assert abs(st.pb.speed - 0.5) < 1e-6
+
+
+def test_presets_store_and_recall():
+    s = small_show()
+    e = Engine(s)
+    e.select([1])
+    e.set_attr("red", 255)
+    e.set_intensity(100)
+    pr = e.make_preset("Red", "Color")
+    assert pr.values == {1: {1: 255}}               # only colour channels kept
+    e.clear_programmer()
+    e.select([2])                                    # same type -> recalled by type
+    assert e.apply_preset(pr) == 1
+    assert e.programmer[2] == {1: 255}
+
+
+def test_import_presets(imported):
+    show, _ = imported
+    names = [p.name for p in show.presets]
+    assert names[:3] == ["WHITE", "GREEN", "YELLOW"]
+    assert show.presets[0].category == "Color"
+
+
+def test_channel_functions_and_beam_state():
+    from minidesk.vis_state import compute
+    s = small_show()
+    e = Engine(s)
+    e.select([3])
+    e.set_intensity(100)
+    e.set_attr("gobo", 30)      # gobo 2
+    e.set_attr("prism", 60)     # prism on
+    u = bytes(e.tick(0.0)[0])
+    st = compute(s.fixture(3), s.types[s.fixture(3).type_key], u, 0.0)
+    assert st.gobo == 2 and st.prism == 3
+
+
+# ---------------------------------------------------------------- MIDI / net
+def test_midi_mapping_and_learn():
+    from minidesk.midi import MidiManager, parse
+    got = []
+    m = MidiManager(lambda a, t, v, on: got.append((a, t, round(v, 2), on)))
+    m.mapping = MidiManager.default_bank_map(16, 15)
+    m.feed(parse(0x90, 2, 100))          # note 2 -> GO executor 18
+    m.feed(parse(0xB0, 0, 127))          # cc 0 -> fader executor 16
+    assert got == [("exec_go", 18, 0.79, True), ("exec_fader", 16, 1.0, True)]
+    learned = []
+    m.learn = learned.append
+    m.feed(parse(0x91, 60, 90))
+    assert learned and learned[0]["ch"] == 1 and learned[0]["num"] == 60
+
+
+def test_artpoll_reply_parse():
+    from minidesk.dmx_io import artpoll_packet, parse_artpollreply, same_subnet
+    assert artpoll_packet()[8:10] == b"\x00\x20"
+    pkt = bytearray(239)
+    pkt[:8] = b"Art-Net\0"
+    pkt[8:10] = b"\x00\x21"
+    pkt[10:14] = bytes([192, 168, 0, 231])
+    pkt[26:30] = b"MINI"
+    rep = parse_artpollreply(bytes(pkt))
+    assert rep["ip"] == "192.168.0.231" and rep["short"] == "MINI"
+    assert same_subnet("192.168.0.10", "192.168.0.231") and not same_subnet("10.0.0.2", "192.168.0.231")

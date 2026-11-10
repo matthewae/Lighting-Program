@@ -358,37 +358,26 @@ class StageView(QWidget):
         beams.sort(key=lambda b: -b[0])
         p.setCompositionMode(QPainter.CompositionMode_Plus)
         for _depth, fx, st, pos, end, L in beams:
-            r = L * math.tan(math.radians(st.beam_angle / 2))
-            a_c, e_c = self.to_cam(pos), self.to_cam(end)
-            axis = _norm(_sub(e_c, a_c))
-            perp = _norm(_cross(axis, _norm(e_c)))
-            r0 = 0.05
-            pts = [_add(a_c, _mul(perp, r0)), _add(e_c, _mul(perp, r)),
-                   _add(e_c, _mul(perp, -r)), _add(a_c, _mul(perp, -r0))]
-            qpts = [self.project_cam(v) for v in pts]
-            if any(q is None for q in qpts):
-                continue
-            col = QColor(*st.colour)
-            k = st.intensity * max(0.3, min(1.0, (14.0 / max(st.beam_angle, 1.0)) ** 0.6))
-            beam_alpha = int(min(255, 170 * self.fog_level * k + 18 * k))
-            pa, pe = self.project_cam(a_c), self.project_cam(e_c)
-            grad = QLinearGradient(pa, pe)
-            c0 = QColor(col)
-            c0.setAlpha(beam_alpha)
-            c1 = QColor(col)
-            c1.setAlpha(int(beam_alpha * 0.25))
-            grad.setColorAt(0, c0)
-            grad.setColorAt(1, c1)
-            p.setPen(Qt.NoPen)
-            p.setBrush(QBrush(grad))
-            p.drawPolygon(QPolygonF(qpts))
-            self._draw_pool(p, end, st, r, k)
+            dirs = [st.direction]
+            if st.prism:
+                # prism: split into facets around the beam axis, rotating with the prism channel
+                spread = math.radians(max(4.0, st.beam_angle * 0.9))
+                dirs = [self._offset_dir(st.direction, spread, math.radians(st.prism_angle) + 2 * math.pi * i / st.prism)
+                        for i in range(st.prism)]
+            share = 1.0 if len(dirs) == 1 else 0.55
+            for d in dirs:
+                Ld = self._hit(pos, d) if d is not st.direction else L
+                e = _add(pos, _mul(d, Ld))
+                self._draw_beam(p, pos, e, Ld, st, share)
+            pa = self.project(pos)
             if pa:
+                k = st.intensity
                 g = QRadialGradient(pa, 8 + 8 * k)
-                c2 = QColor(col)
+                c2 = QColor(*st.colour)
                 c2.setAlpha(int(230 * k))
                 g.setColorAt(0, c2)
                 g.setColorAt(1, QColor(0, 0, 0, 0))
+                p.setPen(Qt.NoPen)
                 p.setBrush(QBrush(g))
                 p.drawEllipse(pa, 8 + 8 * k, 8 + 8 * k)
         if self.fog_level > self.haze + 0.02:
@@ -430,24 +419,85 @@ class StageView(QWidget):
                 p.drawText(q + QPointF(-6, -16 if fx.mount == "hang" else 20), str(fx.fid))
         self._hud(p, "3D  |  drag: orbit   wheel: zoom   click: select (Ctrl = add)   Tab: next view")
 
+    @staticmethod
+    def _offset_dir(d: Vec, ang: float, phi: float) -> Vec:
+        a = _norm(_cross(d, (0, 0, 1))) if abs(d[2]) < 0.95 else (1.0, 0.0, 0.0)
+        b = _cross(d, a)
+        side = _add(_mul(a, math.cos(phi)), _mul(b, math.sin(phi)))
+        return _norm(_add(_mul(d, math.cos(ang)), _mul(side, math.sin(ang))))
+
+    def _draw_beam(self, p: QPainter, pos: Vec, end: Vec, L: float, st: VisState, share: float) -> None:
+        r = L * math.tan(math.radians(st.beam_angle / 2))
+        a_c, e_c = self.to_cam(pos), self.to_cam(end)
+        axis = _norm(_sub(e_c, a_c))
+        perp = _norm(_cross(axis, _norm(e_c)))
+        col = QColor(*st.colour)
+        k = st.intensity * share * max(0.3, min(1.0, (14.0 / max(st.beam_angle, 1.0)) ** 0.6))
+        beam_alpha = int(min(255, 170 * self.fog_level * k + 18 * k))
+        rays = [(0.0, 1.0, 1.0)]
+        if st.gobo and st.frost < 0.6:
+            # gobo: break the beam into rays that rotate with the gobo
+            n = 3 + (st.gobo % 4)
+            rays = [(0.0, 1.0, 0.35)] + [(math.cos(math.radians(st.gobo_angle) + 2 * math.pi * i / n) * 0.55,
+                                          0.28, 0.75) for i in range(n)]
+        for off, width, strength in rays:
+            c_end = _add(e_c, _mul(perp, off * r))
+            rr = r * width
+            pts = [_add(a_c, _mul(perp, 0.05)), _add(c_end, _mul(perp, rr)),
+                   _add(c_end, _mul(perp, -rr)), _add(a_c, _mul(perp, -0.05))]
+            qpts = [self.project_cam(v) for v in pts]
+            if any(q is None for q in qpts):
+                return
+            pa, pe = self.project_cam(a_c), self.project_cam(c_end)
+            grad = QLinearGradient(pa, pe)
+            c0 = QColor(col)
+            c0.setAlpha(int(beam_alpha * strength))
+            c1 = QColor(col)
+            c1.setAlpha(int(beam_alpha * strength * (0.25 + 0.35 * st.frost)))
+            grad.setColorAt(0, c0)
+            grad.setColorAt(1, c1)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(grad))
+            p.drawPolygon(QPolygonF(qpts))
+        self._draw_pool(p, end, st, r, k)
+
+    def _pool_points(self, centre: Vec, r: float, wall: bool) -> list[Vec]:
+        if wall:
+            return [(centre[0] + r * math.cos(a), centre[1] - 0.01, centre[2] + r * math.sin(a))
+                    for a in [i * math.pi / 8 for i in range(16)]]
+        return [(centre[0] + r * math.cos(a), centre[1] + r * math.sin(a), 0.01)
+                for a in [i * math.pi / 8 for i in range(16)]]
+
     def _draw_pool(self, p: QPainter, end: Vec, st: VisState, r: float, k: float) -> None:
-        if end[2] > 0.05:
-            pts = [(end[0] + r * math.cos(a), end[1] - 0.01, end[2] + r * math.sin(a))
-                   for a in [i * math.pi / 8 for i in range(16)]]
-        else:
-            pts = [(end[0] + r * math.cos(a), end[1] + r * math.sin(a), 0.01)
-                   for a in [i * math.pi / 8 for i in range(16)]]
-        poly = self._poly(pts)
+        wall = end[2] > 0.05
+        if st.gobo and st.frost < 0.6:
+            # projected gobo: ring of spots (+ centre spot for odd gobos), rotating
+            n = 3 + (st.gobo % 4)
+            spots = [(0.0, 0.0)] if st.gobo % 2 else []
+            ga = math.radians(st.gobo_angle)
+            spots += [(0.58 * math.cos(ga + 2 * math.pi * i / n), 0.58 * math.sin(ga + 2 * math.pi * i / n))
+                      for i in range(n)]
+            sharp = 1.0 - st.frost
+            for dx, dy in spots:
+                c = (end[0] + dx * r, end[1] - 0.01, end[2] + dy * r) if wall else \
+                    (end[0] + dx * r, end[1] + dy * r, 0.01)
+                self._pool_disc(p, c, r * 0.24, st, k * (0.6 + 0.6 * sharp), wall)
+            self._pool_disc(p, end, r, st, k * 0.25, wall)
+            return
+        self._pool_disc(p, end, r, st, k, wall)
+
+    def _pool_disc(self, p: QPainter, end: Vec, r: float, st: VisState, k: float, wall: bool) -> None:
+        poly = self._poly(self._pool_points(end, r, wall))
         c = self.project(end)
         if not poly or not c:
             return
         br = poly.boundingRect()
         g = QRadialGradient(c, max(br.width(), br.height()) / 2 + 1)
         col = QColor(*st.colour)
-        col.setAlpha(int(120 * k))
+        col.setAlpha(int(min(255, 120 * k)))
         g.setColorAt(0, col)
         col2 = QColor(*st.colour)
-        col2.setAlpha(int(30 * k))
+        col2.setAlpha(int(min(255, 30 * k)))
         g.setColorAt(0.7, col2)
         g.setColorAt(1, QColor(0, 0, 0, 0))
         p.setBrush(QBrush(g))

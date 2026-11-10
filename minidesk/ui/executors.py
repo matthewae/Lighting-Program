@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSlider, QSpinBox, QVBoxLayout,
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMenu, QPushButton, QSlider, QSpinBox, QVBoxLayout,
                                QWidget, QComboBox)
 
 from ..engine import Engine, PlaybackState
@@ -10,6 +10,7 @@ from ..engine import Engine, PlaybackState
 
 class ExecutorStrip(QWidget):
     selected = Signal(object)
+    triggered = Signal(object)        # GO pressed (for MIDI feedback)
 
     def __init__(self, engine: Engine, parent=None):
         super().__init__(parent)
@@ -26,6 +27,8 @@ class ExecutorStrip(QWidget):
         self.name.setStyleSheet("text-align:center; font-size:8pt;")
         self.name.setMinimumHeight(34)
         self.name.clicked.connect(lambda: self.st and self.selected.emit(self.st))
+        self.name.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.name.customContextMenuRequested.connect(self._menu)
         self.step = QLabel("")
         self.step.setAlignment(Qt.AlignCenter)
         self.step.setStyleSheet("color:#8fd18f; font-size:8pt;")
@@ -50,7 +53,7 @@ class ExecutorStrip(QWidget):
         self.b_flash.setObjectName("flash")
         for b in (self.b_back, self.b_go, self.b_pause, self.b_stop):
             b.setFixedHeight(24)
-        self.b_go.clicked.connect(lambda: self.st and self.engine.go(self.st))
+        self.b_go.clicked.connect(self._go)
         self.b_back.clicked.connect(lambda: self.st and self.engine.back(self.st))
         self.b_pause.clicked.connect(lambda: self.st and self.engine.pause(self.st))
         self.b_stop.clicked.connect(self._stop)
@@ -64,10 +67,28 @@ class ExecutorStrip(QWidget):
         lay.addLayout(row2)
         lay.addWidget(self.b_flash)
 
+    def _go(self):
+        if self.st:
+            self.engine.go(self.st)
+            self.triggered.emit(self.st)
+
     def _stop(self):
         if self.st:
-            self.engine.stop(self.st)
-            self.slider.setValue(0)
+            self.engine.stop(self.st, fade=True)
+            if self.st.pb.release <= 0:
+                self.slider.setValue(0)
+
+    def _menu(self, pos):
+        if not self.st:
+            return
+        m = QMenu(self)
+        m.addAction("Edit cues…", lambda: self.selected.emit(self.st))
+        m.addAction("TAP tempo", lambda: self.engine.tap(self.st))
+        m.addAction("Speed ×2", lambda: setattr(self.st.pb, "speed", max(0.02, self.st.pb.speed / 2)))
+        m.addAction("Speed ÷2", lambda: setattr(self.st.pb, "speed", self.st.pb.speed * 2))
+        m.addSeparator()
+        m.addAction("Stop immediately", lambda: (self.engine.stop(self.st), self.slider.setValue(0)))
+        m.exec(self.name.mapToGlobal(pos))
 
     def bind(self, st: PlaybackState | None) -> None:
         self.st = st
@@ -113,6 +134,7 @@ class ExecutorStrip(QWidget):
 
 class ExecutorBar(QWidget):
     playbackSelected = Signal(object)
+    playbackTriggered = Signal(object)
 
     def __init__(self, engine: Engine, per_page: int = 15, parent=None):
         super().__init__(parent)
@@ -126,7 +148,8 @@ class ExecutorBar(QWidget):
         t = QLabel("Playbacks")
         t.setObjectName("title")
         side.addWidget(t)
-        side.addWidget(QLabel(f"{per_page} per bank"))
+        self.per_label = QLabel(f"{per_page} per bank")
+        side.addWidget(self.per_label)
         self.bank = QComboBox()
         self.bank.addItems(["All", "With steps", "Fixed", "Playback", "User"])
         self.bank.currentTextChanged.connect(self._bank)
@@ -153,8 +176,10 @@ class ExecutorBar(QWidget):
         for _ in range(per_page):
             s = ExecutorStrip(engine)
             s.selected.connect(self.playbackSelected.emit)
+            s.triggered.connect(self.playbackTriggered.emit)
             self.strips.append(s)
             lay.addWidget(s)
+        self.strip_layout = lay
         lay.addStretch(1)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.sync)
@@ -194,6 +219,26 @@ class ExecutorBar(QWidget):
         chunk = sts[self.page * self.per_page:(self.page + 1) * self.per_page]
         for i, s in enumerate(self.strips):
             s.bind(chunk[i] if i < len(chunk) else None)
+
+    def set_per_page(self, n: int) -> None:
+        if n == self.per_page:
+            return
+        while len(self.strips) < n:
+            s = ExecutorStrip(self.engine)
+            s.selected.connect(self.playbackSelected.emit)
+            s.triggered.connect(self.playbackTriggered.emit)
+            self.strip_layout.insertWidget(self.strip_layout.count() - 1, s)
+            self.strips.append(s)
+        while len(self.strips) > n:
+            s = self.strips.pop()
+            s.setParent(None)
+            s.deleteLater()
+        self.per_page = n
+        self.per_label.setText(f"{n} per bank")
+        self.rebind()
+
+    def bank_step(self, d: int) -> None:
+        self.spin.setValue(max(1, min(self.spin.maximum(), self.spin.value() + d)))
 
     def show_playback(self, st: PlaybackState) -> None:
         sts = self.visible_states()

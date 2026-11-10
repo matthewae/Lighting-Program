@@ -111,6 +111,139 @@ class AddFixtureDialog(QDialog):
         return made
 
 
+class RangesDialog(QDialog):
+    """Edit the DMX ranges ("functions") of one channel."""
+
+    def __init__(self, ch, moving: bool, parent=None):
+        super().__init__(parent)
+        self.ch = ch
+        self.setWindowTitle(f"Functions – {ch.name}")
+        self.resize(460, 420)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("DMX ranges of this channel (from – to – label). Used by the programmer buttons "
+                             "and the visualizer (gobo numbers, prism on/off, shutter open/strobe…)."))
+        rows = ch.ranges or ch.functions(moving)
+        self.table = QTableWidget(len(rows), 3)
+        self.table.setHorizontalHeaderLabels(["From", "To", "Label"])
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        for r, (lo, hi, lab) in enumerate(rows):
+            for c, v in enumerate((lo, hi, lab)):
+                self.table.setItem(r, c, QTableWidgetItem(str(v)))
+        lay.addWidget(self.table, 1)
+        h = QHBoxLayout()
+        for text, fn in (("Add row", self._add), ("Delete row", self._del),
+                         ("Reset to generic", self._generic)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            h.addWidget(b)
+        lay.addLayout(h)
+        self.moving = moving
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self._reset = False
+
+    def _add(self):
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        for c, v in enumerate(("0", "255", "Function")):
+            self.table.setItem(r, c, QTableWidgetItem(v))
+
+    def _del(self):
+        r = self.table.currentRow()
+        if r >= 0:
+            self.table.removeRow(r)
+
+    def _generic(self):
+        self._reset = True
+        self.accept()
+
+    def apply(self) -> None:
+        if self._reset:
+            self.ch.ranges = []
+            return
+        out = []
+        for r in range(self.table.rowCount()):
+            try:
+                lo = max(0, min(255, int(self.table.item(r, 0).text())))
+                hi = max(lo, min(255, int(self.table.item(r, 1).text())))
+                out.append([lo, hi, self.table.item(r, 2).text().strip() or f"{lo}-{hi}"])
+            except (ValueError, AttributeError):
+                continue
+        self.ch.ranges = sorted(out)
+
+
+class ReaddressDialog(QDialog):
+    def __init__(self, show: Show, fixtures: list[Fixture], parent=None):
+        super().__init__(parent)
+        self.show, self.fixtures = show, sorted(fixtures, key=lambda f: f.fid)
+        self.setWindowTitle(f"Re-address {len(fixtures)} fixture(s)")
+        f = QFormLayout(self)
+        self.uni = QSpinBox()
+        self.uni.setRange(1, 4 if is_console_show(show) else 64)
+        self.uni.setValue(self.fixtures[0].universe + 1)
+        self.start = QSpinBox()
+        self.start.setRange(1, 512)
+        self.start.setValue(self.fixtures[0].address or 1)
+        self.gap = QSpinBox()
+        self.gap.setRange(0, 100)
+        self.gap.setToolTip("Free channels left between fixtures")
+        self.preview = QLabel()
+        self.preview.setWordWrap(True)
+        for w in (self.uni, self.start, self.gap):
+            w.valueChanged.connect(self._preview)
+        f.addRow("Universe", self.uni)
+        f.addRow("Start address", self.start)
+        f.addRow("Gap between fixtures", self.gap)
+        f.addRow(self.preview)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        f.addRow(bb)
+        self._preview()
+
+    def plan(self) -> list[tuple[Fixture, int]]:
+        a = self.start.value()
+        out = []
+        for fx in self.fixtures:
+            out.append((fx, a))
+            a += len(self.show.ftype(fx).channels) + self.gap.value()
+        return out
+
+    def problems(self) -> list[str]:
+        u = self.uni.value() - 1
+        sel = {fx.fid for fx in self.fixtures}
+        used = {}
+        for fx in self.show.fixtures:
+            if fx.fid not in sel and fx.patched and fx.universe == u:
+                for c in range(fx.address, fx.address + len(self.show.ftype(fx).channels)):
+                    used[c] = fx.fid
+        errs = []
+        for fx, a in self.plan():
+            n = len(self.show.ftype(fx).channels)
+            if a + n - 1 > 512:
+                errs.append(f"#{fx.fid} does not fit (ends at {a + n - 1})")
+            hit = {used[c] for c in range(a, a + n) if c in used}
+            if hit:
+                errs.append(f"#{fx.fid} overlaps {sorted(hit)}")
+        return errs
+
+    def _preview(self, *_):
+        pl = self.plan()
+        txt = ", ".join(f"#{fx.fid}→{a}" for fx, a in pl[:12]) + (" …" if len(pl) > 12 else "")
+        errs = self.problems()
+        self.preview.setText(txt + ("<br><span style='color:#f66'>" + "; ".join(errs[:4]) + "</span>" if errs else
+                                    "<br><span style='color:#7f7'>✔ no conflicts</span>"))
+
+    def apply(self) -> bool:
+        if self.problems():
+            return False
+        for fx, a in self.plan():
+            fx.universe, fx.address = self.uni.value() - 1, a
+        return True
+
+
 class TypeEditor(QDialog):
     ATTRS = sorted(FEATURE_OF)
 
@@ -143,8 +276,8 @@ class TypeEditor(QDialog):
                      "These are MiniDesk settings; the console's own profile is not changed.")
         lab.setWordWrap(True)
         lay.addWidget(lab)
-        self.table = QTableWidget(len(ft.channels), 3)
-        self.table.setHorizontalHeaderLabels(["Name", "Attribute", "Default"])
+        self.table = QTableWidget(len(ft.channels), 4)
+        self.table.setHorizontalHeaderLabels(["Name", "Attribute", "Default", "Functions"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.combos = []
         for r, ch in enumerate(ft.channels):
@@ -158,12 +291,22 @@ class TypeEditor(QDialog):
             self.table.setCellWidget(r, 1, cb)
             self.combos.append(cb)
             self.table.setItem(r, 2, QTableWidgetItem(str(ch.default)))
+            fb = QPushButton(f"Edit ({len(ch.functions(ft.is_moving))})" + (" ✎" if ch.ranges else ""))
+            fb.clicked.connect(lambda _=False, c=ch, b=fb: self._ranges(c, b))
+            self.table.setCellWidget(r, 3, fb)
             self.table.setVerticalHeaderItem(r, QTableWidgetItem(str(r + 1)))
         lay.addWidget(self.table, 1)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
+
+    def _ranges(self, ch, btn) -> None:
+        ch.attr = self.combos[self.ft.channels.index(ch)].currentText()
+        d = RangesDialog(ch, self.ft.is_moving, self)
+        if d.exec():
+            d.apply()
+            btn.setText(f"Edit ({len(ch.functions(self.ft.is_moving))})" + (" ✎" if ch.ranges else ""))
 
     def apply(self) -> None:
         ft = self.ft
@@ -199,6 +342,7 @@ class PatchPanel(QWidget):
             hh.setSectionResizeMode(c, QHeaderView.Stretch if c == 1 else QHeaderView.ResizeToContents)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.itemSelectionChanged.connect(self._row_selected)
@@ -242,7 +386,8 @@ class PatchPanel(QWidget):
         lay.addWidget(split, 1)
 
         b = QHBoxLayout()
-        for text, fn in (("Add fixtures…", self.add), ("Remove / unpatch", self.remove),
+        for text, fn in (("Add fixtures…", self.add), ("Re-address selected…", self.readdress),
+                         ("Remove / unpatch", self.remove),
                          ("Edit fixture type && 3D model…", self.edit_type)):
             btn = QPushButton(text)
             btn.clicked.connect(fn)
@@ -355,6 +500,22 @@ class PatchPanel(QWidget):
             self.engine.rebuild_patch()
             self.rebuild()
             self.selectFixtures.emit(made)
+            self.changed.emit()
+
+    def readdress(self) -> None:
+        rows = sorted({i.row() for i in self.table.selectedIndexes()})
+        show = self.engine.show
+        fx = [show.fixtures[r] for r in rows]
+        if not fx:
+            QMessageBox.information(self, "Re-address", "Select one or more fixtures (Shift/Ctrl-click rows).")
+            return
+        d = ReaddressDialog(show, fx, self)
+        if d.exec():
+            if not d.apply():
+                QMessageBox.warning(self, "Re-address", "Not applied – conflicts:\n" + "\n".join(d.problems()))
+                return
+            self.engine.rebuild_patch()
+            self.rebuild()
             self.changed.emit()
 
     def remove(self) -> None:

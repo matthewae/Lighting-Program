@@ -249,3 +249,128 @@ def local_ips() -> set[str]:
     except OSError:
         pass
     return ips
+
+
+# ------------------------------------------------------------ Open DMX (FTDI)
+class OpenDmxOutput:
+    """Cheap FTDI based "Open DMX" USB cables: the PC generates break + 512 slots."""
+
+    def __init__(self, port: str):
+        import serial
+        self.ser = serial.Serial(port, baudrate=250000, bytesize=8, parity="N", stopbits=2, timeout=0)
+
+    def send(self, universes: dict[int, bytearray]) -> None:
+        data = bytes(universes.get(min(universes), bytearray(512)) if universes else bytearray(512))
+        try:
+            self.ser.break_condition = True
+            time.sleep(0.0002)
+            self.ser.break_condition = False
+            self.ser.write(b"\0" + data[:512].ljust(512, b"\0"))
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        self.ser.close()
+
+
+# ------------------------------------------------------------- discovery
+def describe_serial_ports() -> list[dict]:
+    """List serial ports with a guess of what they are (USB DMX interfaces first)."""
+    try:
+        from serial.tools import list_ports
+    except ImportError:
+        return []
+    out = []
+    for p in list_ports.comports():
+        desc = " ".join(str(x) for x in (p.description, p.manufacturer, p.product) if x)
+        low = desc.lower()
+        vid = getattr(p, "vid", None)
+        if "dmx usb pro" in low or "enttec" in low:
+            kind = "ENTTEC DMX USB Pro (in + out)"
+        elif vid == 0x0403:
+            kind = "FTDI USB-DMX (Open DMX or USB Pro)"
+        elif "dmx" in low:
+            kind = "USB DMX interface"
+        else:
+            kind = "Serial port"
+        out.append({"port": p.device, "kind": kind, "desc": desc, "dmx": kind != "Serial port"})
+    out.sort(key=lambda d: (not d["dmx"], d["port"]))
+    return out
+
+
+def artpoll_packet() -> bytes:
+    return b"Art-Net\0" + struct.pack("<H", 0x2000) + struct.pack(">H", 14) + bytes([0x02, 0x00])
+
+
+def parse_artpollreply(pkt: bytes) -> Optional[dict]:
+    if len(pkt) < 108 or pkt[:8] != b"Art-Net\0" or struct.unpack_from("<H", pkt, 8)[0] != 0x2100:
+        return None
+    ip = ".".join(str(b) for b in pkt[10:14])
+    short = pkt[26:44].split(b"\0")[0].decode("latin1", "replace")
+    long_ = pkt[44:108].split(b"\0")[0].decode("latin1", "replace")
+    return {"ip": ip, "short": short, "long": long_}
+
+
+def scan_artnet(seconds: float = 2.5, bind: str = "0.0.0.0") -> dict:
+    """Send ArtPoll and listen: returns {"nodes": [...], "sources": {ip: {universes, packets}}}."""
+    nodes, sources = {}, {}
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    if hasattr(socket, "SO_REUSEPORT"):
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except OSError:
+            pass
+    try:
+        sock.bind((bind, ARTNET_PORT))
+    except OSError as e:
+        sock.close()
+        return {"nodes": [], "sources": {}, "error": f"port 6454 busy ({e})"}
+    sock.settimeout(0.2)
+    own = local_ips()
+    try:
+        sock.sendto(artpoll_packet(), ("255.255.255.255", ARTNET_PORT))
+    except OSError:
+        pass
+    end = time.time() + seconds
+    while time.time() < end:
+        try:
+            pkt, addr = sock.recvfrom(1024)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        rep = parse_artpollreply(pkt)
+        if rep and rep["ip"] not in own:
+            nodes[rep["ip"]] = rep
+            continue
+        dmx = parse_artdmx(pkt)
+        if dmx and addr[0] not in own:
+            s = sources.setdefault(addr[0], {"universes": set(), "packets": 0})
+            s["universes"].add(dmx[0])
+            s["packets"] += 1
+    sock.close()
+    return {"nodes": list(nodes.values()),
+            "sources": {ip: {"universes": sorted(v["universes"]), "packets": v["packets"]}
+                        for ip, v in sources.items()}}
+
+
+def all_local_ipv4() -> list[str]:
+    ips = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.add(info[4][0])
+    except OSError:
+        pass
+    ips |= local_ips()
+    ips.discard("127.0.0.1")
+    return sorted(ips)
+
+
+def same_subnet(a: str, b: str, mask: str = "255.255.255.0") -> bool:
+    try:
+        pa, pb, pm = ([int(x) for x in s.split(".")] for s in (a, b, mask))
+    except ValueError:
+        return False
+    return all((x & m) == (y & m) for x, y, m in zip(pa, pb, pm))

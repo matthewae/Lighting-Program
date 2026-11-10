@@ -125,3 +125,62 @@ def wheel_colour(value: int) -> tuple[int, int, int]:
         return WHEEL_COLOURS[(value // 4) % 8]
     slot = min(len(WHEEL_COLOURS) - 1, value * len(WHEEL_COLOURS) // 192)
     return WHEEL_COLOURS[slot]
+
+
+# --------------------------------------------------------------------------
+# Generic channel functions (used when a fixture profile has no ranges).
+def _slots(prefix: str, n: int, start: int, width: int) -> list:
+    return [[start + i * width, start + (i + 1) * width - 1, f"{prefix} {i + 1}"] for i in range(n)]
+
+
+def generic_ranges(attr: str, moving: bool = True) -> list:
+    if attr == "gobo":
+        return [[0, 7, "Open"]] + _slots("Gobo", 8, 8, 16) + [[136, 255, "Gobo shake / scroll"]]
+    if attr == "gobo_rot":
+        return [[0, 127, "Index (angle)"], [128, 191, "Rotate CW"], [192, 255, "Rotate CCW"]]
+    if attr == "prism":
+        return [[0, 7, "Prism off"], [8, 127, "Prism on"], [128, 255, "Prism on + macro"]]
+    if attr == "prism_rot":
+        return [[0, 127, "Index (angle)"], [128, 191, "Rotate CW"], [192, 255, "Rotate CCW"]]
+    if attr == "frost":
+        return [[0, 7, "Frost off"], [8, 255, "Frost 0–100 %"]]
+    if attr == "color":
+        names = ["Open/White", "Red", "Orange", "Yellow", "Green", "Blue", "Magenta", "Cyan", "Pink",
+                 "Light green", "Congo/UV"]
+        w = 192 // len(names)
+        out = [[i * w, (i + 1) * w - 1, n] for i, n in enumerate(names)]
+        out[-1][1] = 191
+        return out + [[192, 255, "Rainbow scroll"]]
+    if attr == "shutter":
+        if moving:
+            return [[0, 7, "Closed"], [8, 247, "Strobe slow → fast"], [248, 255, "Open"]]
+        return [[0, 10, "Open / no strobe"], [11, 255, "Strobe slow → fast"]]
+    if attr == "strobe":
+        return [[0, 10, "No strobe"], [11, 255, "Strobe slow → fast"]]
+    if attr == "zoom":
+        return [[0, 255, "Narrow → wide"]]
+    if attr == "focus":
+        return [[0, 255, "Near → far"]]
+    if attr == "iris":
+        return [[0, 255, "Open → closed"]]
+    if attr == "control":
+        return [[0, 99, "No function"], [100, 199, "Lamp on / special"], [200, 255, "Reset (hold 3 s)"]]
+    return []
+
+
+def range_label(ranges: list, value: int) -> str:
+    for lo, hi, label in ranges:
+        if lo <= value <= hi:
+            return label
+    return ""
+
+
+def gobo_index(ranges: list, value: int) -> int:
+    """0 = open, 1..n = gobo number, -1 = shake/scroll (generic)."""
+    label = range_label(ranges, value).lower()
+    if not label or "open" in label:
+        return 0
+    digits = "".join(ch for ch in label if ch.isdigit())
+    if label.startswith("gobo") and digits:
+        return int(digits)
+    return -1 if "shake" in label or "scroll" in label else 1

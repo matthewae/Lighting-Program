@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import (QColorDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QColorDialog, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
                                QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout,
                                QWidget)
 
@@ -64,14 +64,24 @@ class ChannelRow(QWidget):
     changed = Signal(str, int)
     released = Signal(str)
 
-    def __init__(self, name: str, attr: str, value: int, active: bool, parent=None):
+    def __init__(self, name: str, attr: str, value: int, active: bool, functions=None, parent=None):
         super().__init__(parent)
         self.name = name
+        self.functions = functions or []
         lay = QHBoxLayout(self)
         lay.setContentsMargins(2, 1, 2, 1)
         self.lbl = QLabel(f"{name}")
         self.lbl.setMinimumWidth(110)
         self.lbl.setToolTip(attr)
+        self.func = QComboBox()
+        self.func.setMinimumWidth(150)
+        self.func.setToolTip("Channel function – choose to jump to that DMX range")
+        if self.functions:
+            for lo, hi, label in self.functions:
+                self.func.addItem(f"{label}  ({lo}–{hi})", (lo + hi) // 2 if hi - lo < 40 else lo + (hi - lo) // 4)
+            self.func.activated.connect(lambda i: self.spin.setValue(self.func.itemData(i)))
+        else:
+            self.func.setVisible(False)
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(0, 255)
         self.spin = QSpinBox()
@@ -79,25 +89,35 @@ class ChannelRow(QWidget):
         self.btn = QPushButton("×")
         self.btn.setFixedWidth(26)
         self.btn.setToolTip("Release this attribute from the programmer")
-        for w in (self.lbl, self.slider, self.spin, self.btn):
+        for w in (self.lbl, self.func, self.slider, self.spin, self.btn):
             lay.addWidget(w)
-        lay.setStretch(1, 1)
+        lay.setStretch(2, 1)
         self.set_value(value, active)
         self.slider.valueChanged.connect(self._slider)
         self.spin.valueChanged.connect(self._spin)
         self.btn.clicked.connect(lambda: self.released.emit(self.name))
+
+    def _sync_func(self, v: int) -> None:
+        for i, (lo, hi, _l) in enumerate(self.functions):
+            if lo <= v <= hi:
+                self.func.blockSignals(True)
+                self.func.setCurrentIndex(i)
+                self.func.blockSignals(False)
+                return
 
     def set_value(self, v: int, active: bool) -> None:
         for w in (self.slider, self.spin):
             w.blockSignals(True)
             w.setValue(v)
             w.blockSignals(False)
+        self._sync_func(v)
         self.lbl.setStyleSheet("color:#ff6060;" if active else "")
 
     def _slider(self, v):
         self.spin.blockSignals(True)
         self.spin.setValue(v)
         self.spin.blockSignals(False)
+        self._sync_func(v)
         self.lbl.setStyleSheet("color:#ff6060;")
         self.changed.emit(self.name, v)
 
@@ -105,8 +125,63 @@ class ChannelRow(QWidget):
         self.slider.blockSignals(True)
         self.slider.setValue(v)
         self.slider.blockSignals(False)
+        self._sync_func(v)
         self.lbl.setStyleSheet("color:#ff6060;")
         self.changed.emit(self.name, v)
+
+
+class BeamQuick(QGroupBox):
+    """Big buttons for the usual moving-head beam functions."""
+    applied = Signal()
+
+    def __init__(self, engine: Engine, parent=None):
+        super().__init__("Beam quick (moving heads)", parent)
+        self.engine = engine
+        g = QGridLayout(self)
+        rows = [
+            ("Gobo", "gobo", [("Open", "open"), *[(str(i), f"gobo {i}") for i in range(1, 9)], ("Shake", "shake")]),
+            ("Gobo rot", "gobo_rot", [("Stop", "index"), ("⟳ CW", "rotate cw"), ("⟲ CCW", "rotate ccw")]),
+            ("Prism", "prism", [("Off", "off"), ("On", "prism on"), ("Macro", "macro")]),
+            ("Prism rot", "prism_rot", [("Stop", "index"), ("⟳ CW", "rotate cw"), ("⟲ CCW", "rotate ccw")]),
+            ("Frost", "frost", [("Off", 0), ("50%", 132), ("100%", 255)]),
+            ("Zoom", "zoom", [("Narrow", 0), ("Mid", 128), ("Wide", 255)]),
+            ("Focus", "focus", [("Near", 0), ("Mid", 128), ("Far", 255)]),
+            ("Iris", "iris", [("Open", 0), ("Half", 128), ("Small", 230)]),
+            ("Shutter", "shutter", [("Open", "open"), ("Strobe", "strobe"), ("Closed", "closed")]),
+            ("Lamp/Reset", "control", [("Lamp on", "lamp"), ("Reset", "reset")]),
+        ]
+        for r, (label, attr, btns) in enumerate(rows):
+            g.addWidget(QLabel(label), r, 0)
+            for c, (txt, what) in enumerate(btns):
+                b = QPushButton(txt)
+                b.setMinimumWidth(42)
+                b.clicked.connect(lambda _=False, a=attr, w=what: self.apply(a, w))
+                g.addWidget(b, r, c + 1)
+
+    def apply(self, attr: str, what) -> None:
+        show = self.engine.show
+        for fid in self.engine.selection:
+            fx = show.fixture(fid)
+            if not fx:
+                continue
+            ft = show.types[fx.type_key]
+            for ch in ft.channels:
+                if ch.attr != attr:
+                    continue
+                if isinstance(what, int):
+                    v = what
+                else:
+                    v = None
+                    for lo, hi, lab in ch.functions(ft.is_moving):
+                        if what in lab.lower():
+                            v = lo if what in ("rotate cw", "rotate ccw", "strobe") else (lo + hi) // 2
+                            if what in ("rotate cw", "rotate ccw"):
+                                v = lo + (hi - lo) // 3
+                            break
+                    if v is None:
+                        continue
+                self.engine.set_attr(ch.name, v, [fid], by_name=True)
+        self.applied.emit()
 
 
 class ProgrammerPanel(QWidget):
@@ -174,6 +249,9 @@ class ProgrammerPanel(QWidget):
             sc.setWidget(w)
             self.tabs.addTab(sc, feat)
             self.pages[feat] = v
+        self.beam_quick = BeamQuick(engine)
+        self.beam_quick.applied.connect(lambda: (self.refresh(), self.programmerChanged.emit()))
+        self.pages["Beam"].insertWidget(0, self.beam_quick)
         self.fx = EffectsPanel(engine)
         self.fx.changed.connect(self.programmerChanged.emit)
         fx_scroll = QScrollArea()
@@ -197,14 +275,14 @@ class ProgrammerPanel(QWidget):
 
     # ----------------------------------------------------------------- build
     def rebuild(self) -> None:
-        for feat, v in self.pages.items():
-            while v.count() > 1:
-                w = v.takeAt(0).widget()
-                if w:
-                    w.deleteLater()
+        for row in self.rows.values():
+            row.setParent(None)
+            row.deleteLater()
         self.rows.clear()
         sel = self.engine.selection
         show = self.engine.show
+        self.beam_quick.setVisible(any(show.fixture(f) and show.types[show.fixture(f).type_key].is_moving
+                                       for f in sel))
         if not sel:
             self.info.setText("No fixtures selected  –  select fixtures or a group")
             return
@@ -222,7 +300,7 @@ class ProgrammerPanel(QWidget):
                     continue
                 seen.add(ch.name)
                 val, active = self._current(ch.name)
-                row = ChannelRow(ch.name, ch.attr, val, active)
+                row = ChannelRow(ch.name, ch.attr, val, active, ch.functions(show.types[tk].is_moving))
                 row.changed.connect(self._changed)
                 row.released.connect(self._release)
                 page = self.pages[FEATURE_OF.get(ch.attr, "Other")]

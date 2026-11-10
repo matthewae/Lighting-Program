@@ -19,6 +19,7 @@ class Channel:
     name: str
     attr: str = "none"
     default: int = 0
+    ranges: list = field(default_factory=list)   # [[lo, hi, label], ...] channel functions; [] = generic
 
     @staticmethod
     def make(name: str, attr: Optional[str] = None, default: Optional[int] = None) -> "Channel":
@@ -26,6 +27,11 @@ class Channel:
         if default is None:
             default = 128 if a in ("pan", "tilt") else 0
         return Channel(name=name, attr=a, default=default)
+
+    def functions(self, moving: bool = True) -> list:
+        """Channel functions: explicit ranges or generic ones for the attribute."""
+        from .attributes import generic_ranges
+        return self.ranges or generic_ranges(self.attr, moving)
 
 
 @dataclass
@@ -185,11 +191,13 @@ class Step:
     fade_out: float = -1.0     # fade out for intensity going down, -1 = same as fade
     delay: float = 0.0         # delay before the fade in starts
     delay_out: float = -1.0    # delay before the fade out starts, -1 = same as delay
+    follow: bool = False       # cuelist: go to the next cue automatically after fade + hold
 
     def to_json(self) -> dict:
         return {
             "name": self.name, "fade": self.fade, "hold": self.hold,
             "fade_out": self.fade_out, "delay": self.delay, "delay_out": self.delay_out,
+            "follow": self.follow,
             "values": {str(f): {str(c): v for c, v in ch.items()} for f, ch in self.values.items()},
             "effects": [e.to_json() for e in self.effects],
         }
@@ -199,10 +207,13 @@ class Step:
         return Step(
             name=d.get("name", ""), fade=float(d.get("fade", 0)), hold=float(d.get("hold", -1)),
             fade_out=float(d.get("fade_out", -1)), delay=float(d.get("delay", 0)),
-            delay_out=float(d.get("delay_out", -1)),
+            delay_out=float(d.get("delay_out", -1)), follow=bool(d.get("follow", False)),
             values={int(f): {int(c): int(v) for c, v in ch.items()} for f, ch in d.get("values", {}).items()},
             effects=[Effect.from_json(e) for e in d.get("effects", [])],
         )
+
+
+PB_DIRECTIONS = ["forward", "backward", "bounce", "random"]
 
 
 @dataclass
@@ -216,11 +227,16 @@ class Playback:
     bank: str = "Playback"     # label of origin (Fixed / Playback / User)
     source: str = ""           # info about where it was imported from
     slot: int = -1             # record index in the console file (-1 = not from console)
+    direction: str = "forward" # forward | backward | bounce | random
+    loop: bool = True          # chase/cuelist wraps around at the end (False = stop/hold at the end)
+    xfade: float = 0.0         # chase crossfade as % of the step time (0 = use fade times)
+    release: float = 0.0       # fade out time when the playback is stopped (seconds)
 
     def to_json(self) -> dict:
         return {
             "name": self.name, "mode": self.mode, "speed": self.speed, "fade": self.fade,
             "number": self.number, "bank": self.bank, "source": self.source, "slot": self.slot,
+            "direction": self.direction, "loop": self.loop, "xfade": self.xfade, "release": self.release,
             "steps": [s.to_json() for s in self.steps],
         }
 
@@ -230,8 +246,33 @@ class Playback:
             name=d["name"], mode=d.get("mode", "chase"), speed=float(d.get("speed", 1)),
             fade=float(d.get("fade", 0)), number=int(d.get("number", 0)),
             bank=d.get("bank", "Playback"), source=d.get("source", ""), slot=int(d.get("slot", -1)),
+            direction=d.get("direction", "forward"), loop=bool(d.get("loop", True)),
+            xfade=float(d.get("xfade", 0)), release=float(d.get("release", 0)),
             steps=[Step.from_json(s) for s in d.get("steps", [])],
         )
+
+
+PRESET_CATEGORIES = ["Intensity", "Position", "Color", "Beam", "All"]
+
+
+@dataclass
+class Preset:
+    name: str
+    category: str = "All"
+    values: dict[int, dict[int, int]] = field(default_factory=dict)   # fid -> {chan: value}
+    slot: int = -1             # preset record in the console file
+    source: str = ""
+
+    def to_json(self) -> dict:
+        return {"name": self.name, "category": self.category, "slot": self.slot, "source": self.source,
+                "values": {str(f): {str(c): v for c, v in ch.items()} for f, ch in self.values.items()}}
+
+    @staticmethod
+    def from_json(d: dict) -> "Preset":
+        return Preset(name=d["name"], category=d.get("category", "All"), slot=int(d.get("slot", -1)),
+                      source=d.get("source", ""),
+                      values={int(f): {int(c): int(v) for c, v in ch.items()}
+                              for f, ch in d.get("values", {}).items()})
 
 
 @dataclass
@@ -248,6 +289,13 @@ class OutputConfig:
     input_bind: str = "0.0.0.0"
     input_enttec_port: str = ""
     input_merge: str = "replace"     # replace | htp
+    opendmx_enabled: bool = False    # FTDI "Open DMX" style USB cable (output only)
+    opendmx_port: str = ""
+    midi_in: str = ""                # MIDI input device name
+    midi_out: str = ""               # MIDI output device name
+    midi_map: list = field(default_factory=list)   # [{"kind","ch","num","action","target"}]
+    midi_feedback: bool = True       # send MIDI notes when executors are triggered
+    auto_reconnect: bool = True      # re-open USB devices when they are plugged in again
 
 
 @dataclass
@@ -257,6 +305,7 @@ class Show:
     fixtures: list[Fixture] = field(default_factory=list)
     groups: list[Group] = field(default_factory=list)
     playbacks: list[Playback] = field(default_factory=list)
+    presets: list[Preset] = field(default_factory=list)
     output: OutputConfig = field(default_factory=OutputConfig)
     stage_width: float = 12.0
     stage_depth: float = 8.0
@@ -308,6 +357,7 @@ class Show:
             "fixtures": [asdict(f) for f in self.fixtures],
             "groups": [asdict(g) for g in self.groups],
             "playbacks": [p.to_json() for p in self.playbacks],
+            "presets": [p.to_json() for p in self.presets],
             "output": asdict(self.output),
             "console_info": self.console_info,
             "source_path": self.source_path,
@@ -326,6 +376,7 @@ class Show:
         s.fixtures = [Fixture(**f) for f in d.get("fixtures", [])]
         s.groups = [Group(**g) for g in d.get("groups", [])]
         s.playbacks = [Playback.from_json(p) for p in d.get("playbacks", [])]
+        s.presets = [Preset.from_json(p) for p in d.get("presets", [])]
         if "output" in d:
             s.output = OutputConfig(**{k: v for k, v in d["output"].items()
                                        if k in OutputConfig.__dataclass_fields__})

@@ -22,7 +22,7 @@ import struct
 import zlib
 from dataclasses import dataclass, field
 
-from .model import Channel, Fixture, FixtureType, Group, Playback, Show, Step
+from .model import Channel, Fixture, FixtureType, Group, Playback, Preset, Show, Step
 
 MAGIC = b"SHOWMINI1000"
 
@@ -66,6 +66,8 @@ PB_COUNT = 600
 FIXED_TABLE = 0xEFA60
 FIXED_COUNT = 300
 PB_STRIDE = 0x40
+PRESET_TABLE = 0xE3260        # 400 x 64 byte preset records
+PRESET_COUNT = 400
 
 STEP_BASE = 0x115E5E          # start of the 0xC0 byte block heap
 STEP_BLOCK = 0xC0
@@ -94,11 +96,12 @@ class ImportReport:
     groups: int = 0
     playbacks: int = 0
     steps: int = 0
+    presets: int = 0
     warnings: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         s = (f"{self.types} fixture types, {self.fixtures} fixtures, {self.groups} groups, "
-             f"{self.playbacks} playbacks, {self.steps} steps")
+             f"{self.playbacks} playbacks, {self.steps} steps, {self.presets} presets")
         if self.warnings:
             s += "\n" + "\n".join(self.warnings[:20])
         return s
@@ -214,6 +217,44 @@ class ShoReader:
                 first, last = _u16(d, o + 0x12), _u16(d, o + 0x14)
                 name = _text(d[o + 0x2C:o + 0x40])
                 yield bank, i, name, speed_ms, first, last
+
+    def presets(self, valid_fx: set[int]):
+        """Yield (index, name, {fixture index: [(code, value)]}) for decodable presets.
+
+        A preset record points at a first and a last heap block; their content is a list of
+        ``FFFE <fixture>`` markers each followed by (wheel code 0..39, value) pairs.
+        """
+        d = self.d
+        for i in range(PRESET_COUNT):
+            o = PRESET_TABLE + i * PB_STRIDE
+            if d[o] == 0:
+                continue
+            name = _text(d[o + 0x2C:o + 0x40])
+            first, last = _u16(d, o + 0x0C), _u16(d, o + 0x0E)
+            hb = [self._block(first)] + ([self._block(last)] if last != first else [])
+            if any(b + STEP_BLOCK > STEP_HEAP_END for b in hb):
+                continue
+            buf = b"".join(d[b:b + STEP_BLOCK] for b in hb)
+            q, cur, ents, ok = 0, None, {}, False
+            while q + 4 <= len(buf):
+                w = _u16(buf, q)
+                if w == 0xFFFE:
+                    f = _u16(buf, q + 2)
+                    q += 4
+                    if f == 0xFFFF:
+                        ok = True
+                        break
+                    if f not in valid_fx:
+                        break
+                    cur = f
+                    continue
+                c, v = struct.unpack_from("<HH", buf, q)
+                q += 4
+                if cur is None or c >= 2 * PAGES:
+                    break
+                ents.setdefault(cur, []).append((c, v))
+            if ok and ents:
+                yield i, name, ents
 
     def _block(self, k: int) -> int:
         return STEP_BASE + k * STEP_BLOCK
@@ -390,6 +431,34 @@ def import_sho_bytes(raw: bytes, name: str = "MINI1000") -> tuple[Show, ImportRe
         show.playbacks.append(pb)
     rep.playbacks = len(show.playbacks)
 
+    # presets (colour / position / beam ...): codes are 0..39 = wheel A/B pages
+    from .attributes import FEATURE_OF
+    for pi, pname, ents in rd.presets(valid_fx):
+        pr = Preset(name=pname or f"Preset {pi + 1}", slot=pi, source=f"console preset {pi + 1}")
+        feats = set()
+        for fx_i, pairs in ents.items():
+            fid = idx_to_fid[fx_i]
+            ft = show.types[show.fixture(fid).type_key]
+            slots = slot_tab[ft.key]
+            vals = pr.values.setdefault(fid, {})
+            for code, v in pairs:
+                coarse, fine = slots[_code_to_slot(CODE_A + code)]
+                if not coarse or coarse > len(ft.channels):
+                    continue
+                if v > 255 and fine and fine <= len(ft.channels):
+                    vals[coarse - 1], vals[fine - 1] = v >> 8, v & 0xFF
+                elif v <= 255:
+                    vals[coarse - 1] = v
+                f_ = FEATURE_OF.get(ft.channels[coarse - 1].attr, "Other")
+                if f_ != "Other":
+                    feats.add(f_)
+        pr.values = {f: v for f, v in pr.values.items() if v}
+        if pr.values:
+            pr.category = feats.pop() if len(feats) == 1 and feats <= {"Intensity", "Position", "Color", "Beam"} \
+                else "All"
+            show.presets.append(pr)
+
+    rep.presets = len(show.presets)
     from .layout import auto_layout
     auto_layout(show)
     return show, rep

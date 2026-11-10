@@ -8,10 +8,20 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
 |---|---|
 | **Buka & simpan langsung file show console (`*.SHO`)** | Edit lalu **Save (Ctrl+S)** → ditulis kembali ke file `.SHO` yang sama (CRC header dihitung ulang, file dibaca ulang untuk verifikasi). Salin ke USB, colok ke console, load, mainkan. |
 | Isi file yang dibaca | Library fixture, patch DMX (4 universe), tipe tiap fixture, group (nama + anggota + urutan), playback & fixed playback beserta step/cue-nya, IP console |
+| Isi preset console | Preset color/position/beam dari file console ikut terbaca (yang datanya utuh) |
 | Visualizer live dari console | DMX dari console via **Art-Net** atau interface **USB DMX (ENTTEC Pro) mode input** |
-| Output ke lampu | Art-Net, sACN (E1.31), ENTTEC DMX USB Pro |
+| Output ke lampu | Art-Net, sACN (E1.31), ENTTEC DMX USB Pro, Open DMX (kabel FTDI) |
+| **Plug & play** | *Console → Connect console (Ctrl+K)*: scan Art-Net (ArtPoll), cek IP PC vs console, deteksi otomatis interface USB DMX + sambung ulang otomatis saat dicolok, **MIDI in/out + MIDI Learn** (Windows: tanpa install tambahan) |
+
+![Splash](docs/splash.png)
 
 ![Programmer + effects + visualizer 3D](docs/screenshot_programmer.png)
+
+![Beam: gobo, prism, frost](docs/screenshot_beam.png)
+
+![Cue list / playback lengkap](docs/screenshot_cues.png)
+
+![Connect console: Art-Net / USB DMX / MIDI](docs/screenshot_connect.png)
 
 ![Stage Layout editor (Top view)](docs/screenshot_stage_layout.png)
 
@@ -24,7 +34,7 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
 | Nama fixture, tipe fixture (dari library console), universe & address, patch/unpatch | Posisi di panggung (Stage Layout), model 3D |
 | Tambah fixture baru (tipe dari library console) | Effect, perubahan isi/timing cue |
 | Group: buat, ganti nama, ubah anggota & urutan, hapus | Playback baru yang dibuat di MiniDesk |
-| Nama playback & fixed playback | Pengaturan visual tipe fixture |
+| Nama playback & fixed playback, nama preset | Pengaturan visual tipe fixture, fungsi channel |
 | Tabel kepemilikan channel DMX console + CRC header | |
 
 - Simpan tanpa perubahan menghasilkan file **identik byte-per-byte** dengan aslinya; hanya byte
@@ -52,19 +62,37 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
   dan **Front** (geser kiri/kanan + tinggi), drag fixture dengan snap grid, pilih banyak (Ctrl+klik
   atau tarik kotak), form X/Y/Z, mount, arah (yaw) dan tilt, tombol *Line up*, *Distribute*,
   *Same height*, *Mirror*, *Centre*, *Turn 180°*, *Auto layout*.
+- **Beam moving head** (Programmer → *Beam*): tombol cepat gobo (Open, 1–8, shake), gobo rotation
+  (stop / CW / CCW), prism (off / on / macro), prism rotation, frost (0/50/100 %), zoom, focus, iris,
+  shutter (open / strobe / closed), lamp on / reset. Setiap channel punya **daftar fungsi** (rentang DMX)
+  – bisa dipilih dari dropdown di programmer dan diedit di *Patch → Edit fixture type → Functions*.
+  Visualizer menampilkan **gobo** (pola berputar di lantai & sinar bertekstur), **prism** (sinar terpecah
+  dan berputar), **frost** (sinar lebar & lembut), zoom dan iris.
+- **Presets** (tab 🎨): simpan programmer sebagai preset *Color / Position / Beam / Intensity / All*,
+  klik untuk memakai ke fixture terpilih (fixture tipe sama ikut mendapat nilai), klik kanan untuk
+  rename / update / kategori / hapus. Preset dari console ikut terbaca.
 - **Effects** (Programmer → *Effects ✦*):
   - Position: circle, figure 8, pan wave, tilt wave, ballyhoo
   - Intensity: dimmer sine, pulse/ramp, chase, random, strobe
   - Color: rainbow, color chase (2 warna)
   - Parameter: speed (Hz/BPM), size, low/high, phase spread, phase offset, wings (mirror),
     duty, fade-in effect, reverse. Effect bisa disimpan ke cue dan ikut fader playback.
-- **Timing cue**: delay in, fade in, delay out, fade out (untuk intensitas turun), hold (chase).
-- **Playbacks**: **15 playback per bank** (bank 1, 2, …), fader, GO, back, pause, stop, Flash;
-  mode chase / cuelist; intensitas **HTP**, atribut lain **LTP**; Grand Master & Blackout.
+- **Timing cue**: delay in, fade in, delay out, fade out (untuk intensitas turun), hold, **follow**
+  (cue berikutnya jalan otomatis).
+- **Playback lengkap** (tab 🎞 Cues): mode chase / cue list, arah **forward / backward / bounce /
+  random**, loop on/off, speed + **TAP tempo** (BPM), crossfade % untuk chase, **release** (fade saat
+  stop), transport GO / back / pause / stop, tabel cue dengan *Edit values*, *Update from programmer*,
+  *Insert*, *Duplicate*, *Copy / Paste*, urutkan, *Merge → 1 scene*.
+- **Playbacks**: **15 playback per bank** (bisa 10/12/15/20 di Preferences), fader, GO, back, pause,
+  stop, Flash, klik kanan untuk TAP / speed ×2 ÷2; intensitas **HTP**, atribut lain **LTP**;
+  Grand Master & Blackout.
 - **Fixtures / Groups**: tile fixture dengan ikon model & warna live; klik kanan group untuk
   rename / update anggota / hapus.
 - **Programmer**: fader per atribut, intensitas cepat, Highlight, color picker, XY pad pan/tilt.
-- **Patch**: tabel + form fixture (nama, tipe, universe, address, *Next free address*, *Unpatch*).
+- **Patch**: tabel + form fixture (nama, tipe, universe, address, *Next free address*, *Unpatch*),
+  **Re-address selected** (banyak fixture sekaligus dengan cek tabrakan address).
+- **Splash screen**, layar pembuka, **Preferences** (playback per bank, fade default, autosave project,
+  haze, model 3D, label), lampu status koneksi (Art-Net / USB / MIDI) di status bar.
 - **DMX monitor** dan **command line gaya dot2**:
 
 ```
@@ -76,6 +104,10 @@ clear     blackout    highlight
 - Menu **Help → Quick guide (F1)** berisi panduan singkat berbahasa Indonesia.
 
 ## Instalasi
+
+> MIDI di Windows langsung bekerja (WinMM bawaan Windows). Di Linux/macOS tambahkan
+> `pip install python-rtmidi` bila perlu MIDI.
+
 
 Butuh Python 3.10 atau lebih baru (Windows / macOS / Linux).
 
@@ -117,6 +149,16 @@ python -m minidesk samples/GMS_MATT.SHO
 Windows: klik dua kali `run_windows.bat`. Linux/macOS: `./run.sh`.
 
 ## Alur kerja dengan console CODE MINI 1000T
+
+### 0. Sambungkan console (plug & play)
+
+*Console → Connect console* (Ctrl+K) atau tombol **🔗 Connect console**:
+
+| Koneksi | Langkah |
+|---|---|
+| **Art-Net** (kabel LAN) | PC & console satu jaringan (wizard memberi tahu bila IP PC belum cocok, mis. set PC ke `192.168.0.10`), aktifkan Art-Net di console, tekan **Scan**, pilih console → *Use as console input*. |
+| **DMX** (USB-DMX) | Colokkan interface; wizard menampilkannya. DMX OUT console → DMX IN ENTTEC USB Pro → *Use as console input*. Untuk menyalakan lampu dari PC: *Use as output (USB Pro / Open DMX)*. Interface yang dicabut/dicolok lagi tersambung otomatis. |
+| **MIDI** | Pilih MIDI in/out, lalu **Learn**: pilih aksi (GO, fader, flash, stop, GM, blackout, bank) → tekan tombol / gerakkan fader di console. *Auto map* = note 0–14 → GO, CC 0–14 → fader bank 1. MIDI out mengirim note saat playback di-GO. |
 
 ### A. Lihat apa yang sedang diprogram di console (visualizer live)
 

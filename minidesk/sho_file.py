@@ -235,6 +235,10 @@ class ShoDocument:
             o = table + pb.slot * S.PB_STRIDE
             if self._put_name(o + 0x2C, 20, pb.name):
                 rep.written.append(f"{pb.bank} playback {pb.slot + 1}: name -> {pb.name}")
+        # -- preset names
+        for pr in getattr(show, "presets", []):
+            if pr.slot >= 0 and self._put_name(S.PRESET_TABLE + pr.slot * S.PB_STRIDE + 0x2C, 20, pr.name):
+                rep.written.append(f"Preset {pr.slot + 1}: name -> {pr.name}")
 
     def _group_used(self, g: int) -> bool:
         no = S.GROUP_NAMES + g * S.GROUP_NAME_LEN

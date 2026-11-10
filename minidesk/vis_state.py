@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from .attributes import wheel_colour
+from .attributes import gobo_index, range_label, wheel_colour
 from .model import Fixture, FixtureType
 
 
@@ -16,6 +16,11 @@ class VisState:
     beam_angle: float         # full angle, degrees
     fog: float = 0.0          # 0..1 for fog machines
     has_beam: bool = True
+    gobo: int = 0             # 0 = open, n = gobo number, -1 = shake
+    gobo_angle: float = 0.0   # degrees
+    prism: int = 0            # number of facets (0 = off)
+    prism_angle: float = 0.0  # degrees
+    frost: float = 0.0        # 0..1
 
 
 def _get(dmx: bytes, base: int, i: int) -> int:
@@ -53,12 +58,14 @@ def compute(fx: Fixture, ft: FixtureType, dmx: bytes, now: float) -> VisState:
                         ft.beam_angle, 0.0, False)
     vals: dict[str, list[int]] = {}
     fine: dict[str, int] = {}
+    chan_of: dict[str, object] = {}
     for i, ch in enumerate(ft.channels):
         v = _get(dmx, base, i)
         if ch.attr.endswith("_fine"):
             fine[ch.attr[:-5]] = v
         else:
             vals.setdefault(ch.attr, []).append(v)
+            chan_of.setdefault(ch.attr, ch)
 
     def first(attr, default=0):
         return vals[attr][0] if attr in vals else default
@@ -119,13 +126,53 @@ def compute(fx: Fixture, ft: FixtureType, dmx: bytes, now: float) -> VisState:
     else:
         direction = aim_direction(fx.aim, fx.rot, floor)
     # --- beam --------------------------------------------------------------
+    moving = ft.is_moving
     angle = ft.beam_angle
-    if "zoom" in vals and ft.is_moving:
+    if "zoom" in vals and moving:
         angle = max(2.0, ft.beam_angle * (0.6 + first("zoom") / 255 * 2.0))
-    if "frost" in vals and first("frost") > 20 and ft.is_moving:
-        angle *= 1.8
+    if "iris" in vals and moving:
+        angle *= 1.0 - 0.7 * first("iris") / 255
+    frost = 0.0
+    if "frost" in vals and moving:
+        fv = first("frost")
+        frost = 0.0 if fv < 8 else (fv - 8) / 247
+        angle *= 1.0 + 1.5 * frost
+
+    def rot(attr):
+        if attr not in vals:
+            return 0.0
+        v = first(attr)
+        lab = range_label(chan_of[attr].functions(moving), v).lower()
+        if "ccw" in lab:
+            return -(now * (30 + (v - 192) / 63 * 300)) % 360
+        if "cw" in lab or "rotate" in lab:
+            return (now * (30 + (v - 128) / 63 * 300)) % 360
+        return v / 127 * 360
+
+    gobo = 0
+    for a in ("gobo",):
+        if a in vals:
+            for v, ch in zip(vals[a], [c for c in ft.channels if c.attr == a]):
+                g = gobo_index(ch.functions(moving), v)
+                if g:
+                    gobo = g
+                    break
+    if gobo == -1:
+        gobo = 1 + int(now * 4) % 3          # shake: alternate patterns
+    prism = 0
+    if "prism" in vals:
+        pv = max(vals["prism"])
+        lab = range_label(chan_of["prism"].functions(moving), pv).lower()
+        if pv >= 8 and "off" not in lab:
+            prism = 8 if ("8" in lab or "8" in chan_of["prism"].name) else 3
+    prism_angle = rot("prism_rot")
+    if prism and "macro" in range_label(chan_of["prism"].functions(moving), max(vals["prism"])).lower() \
+            and "prism_rot" not in vals:
+        prism_angle = (now * 90) % 360
     fog = 0.0
     if ft.kind == "fog":
         fog = max([max(vals[a]) for a in ("fog", "dimmer") if a in vals] or [0]) / 255.0
     return VisState(intensity=max(0.0, min(1.0, inten * gate)), colour=col, direction=direction,
-                    beam_angle=angle, fog=fog, has_beam=ft.kind != "fog" or have_rgb)
+                    beam_angle=angle, fog=fog, has_beam=ft.kind != "fog" or have_rgb,
+                    gobo=gobo, gobo_angle=rot("gobo_rot"), prism=prism, prism_angle=prism_angle,
+                    frost=frost)

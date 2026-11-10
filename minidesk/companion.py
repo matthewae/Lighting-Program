@@ -12,7 +12,7 @@ import json
 import os
 from dataclasses import asdict
 
-from .model import OutputConfig, Playback, Show
+from .model import OutputConfig, Playback, Preset, Show
 
 HOME = os.path.join(os.path.expanduser("~"), ".minidesk")
 PROJECTS = os.path.join(HOME, "projects")
@@ -35,6 +35,7 @@ def _steps_hash(pb: Playback) -> str:
 def remember_imported(show: Show) -> None:
     """Call right after import: remembers the console's own steps per playback."""
     show.console_info["_step_hash"] = {f"{p.bank}:{p.slot}": _steps_hash(p) for p in show.playbacks if p.slot >= 0}
+    show.console_info["_preset_slots"] = [p.slot for p in show.presets if p.slot >= 0]
 
 
 def save(show: Show) -> str:
@@ -46,11 +47,15 @@ def save(show: Show) -> str:
                       for f in show.fixtures},
         "types": {k: {"kind": t.kind, "beam_angle": t.beam_angle, "pan_range": t.pan_range,
                       "tilt_range": t.tilt_range,
-                      "channels": [[c.attr, c.default] for c in t.channels]}
+                      "channels": [[c.attr, c.default, c.ranges] for c in t.channels]}
                   for k, t in show.types.items()},
         "output": asdict(show.output),
         "playbacks": {},
         "user_playbacks": [p.to_json() for p in show.playbacks if p.slot < 0],
+        "user_presets": [p.to_json() for p in show.presets if p.slot < 0],
+        "console_presets": {str(p.slot): {"category": p.category} for p in show.presets if p.slot >= 0},
+        "deleted_presets": [s for s in show.console_info.get("_preset_slots", [])
+                            if s not in {p.slot for p in show.presets}],
     }
     for p in show.playbacks:
         if p.slot < 0:
@@ -96,8 +101,10 @@ def load(show: Show) -> bool:
         ft.pan_range, ft.tilt_range = t.get("pan_range", ft.pan_range), t.get("tilt_range", ft.tilt_range)
         chans = t.get("channels", [])
         if len(chans) == len(ft.channels):
-            for c, (attr, default) in zip(ft.channels, chans):
-                c.attr, c.default = attr, default
+            for c, row in zip(ft.channels, chans):
+                c.attr, c.default = row[0], row[1]
+                if len(row) > 2:
+                    c.ranges = row[2] or []
     if "output" in data:
         show.output = OutputConfig(**{k: v for k, v in data["output"].items()
                                       if k in OutputConfig.__dataclass_fields__})
@@ -110,6 +117,13 @@ def load(show: Show) -> bool:
         # only re-apply edited steps if the console's cues did not change since
         if "steps" in e and e.get("base") == base_hash.get(f"{p.bank}:{p.slot}"):
             p.steps = [Step.from_json(s) for s in e["steps"]]
+    meta = data.get("console_presets", {})
+    gone = set(data.get("deleted_presets", []))
+    show.presets = [p for p in show.presets if p.slot not in gone]
+    for p in show.presets:
+        if str(p.slot) in meta:
+            p.category = meta[str(p.slot)].get("category", p.category)
+    show.presets += [Preset.from_json(d) for d in data.get("user_presets", [])]
     num = max((p.number for p in show.playbacks), default=0)
     for d in data.get("user_playbacks", []):
         pb = Playback.from_json(d)

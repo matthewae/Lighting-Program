@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import traceback
 
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QObject, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -13,17 +13,21 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QDoubleSpin
 
 from .. import companion
 from ..commands import CommandLine
-from ..dmx_io import (ArtNetInput, ArtNetOutput, EnttecProInput, EnttecProOutput, SacnOutput,
-                      local_ips)
+from ..dmx_io import (ArtNetInput, ArtNetOutput, EnttecProInput, EnttecProOutput, OpenDmxOutput,
+                      SacnOutput, describe_serial_ports, local_ips)
+from ..midi import MidiManager
 from ..engine import Engine, EngineRunner
 from ..model import Playback, Show, builtin_types
 from ..sho_file import ShoDocument, step_signature
 from ..sho_import import ShoFormatError, import_sho
+from . import preferences as prefs
+from .connect import ConnectDialog
 from .cue_editor import CueEditor
 from .dmx_monitor import DmxMonitor
 from .executors import ExecutorBar
 from .fixture_sheet import FixtureSheet
 from .patch import PatchPanel
+from .presets_panel import PresetsPanel
 from .programmer import ProgrammerPanel
 from .settings import IOSettingsDialog
 from .stage_editor import StageEditor
@@ -46,7 +50,16 @@ memilih model (beam, spot, wash, PAR, fresnel, strobe, LED bar, blinder, fog).</
 spread, wings, duty dan fade-in.</li>
 <li><b>Store…</b> menyimpan programmer (nilai + effect) sebagai cue di sebuah playback.
 Timing per cue (delay in, fade in, delay out, fade out, hold) diatur di tab <b>Cues</b>.</li>
-<li>Mainkan dengan fader <b>Playbacks</b> di bawah (15 playback per bank).</li>
+<li><b>Programmer → Beam</b>: tombol cepat gobo (open, 1–8, shake), gobo rotation, prism (on / macro /
+rotate), frost, zoom, focus, iris, shutter, lamp/reset. Setiap channel juga punya daftar fungsi (rentang DMX)
+yang bisa diedit di <i>Patch → Edit fixture type</i>.</li>
+<li><b>Presets</b>: simpan programmer sebagai preset Color / Position / Beam / Intensity, klik untuk memakai.
+Preset dari console ikut terbaca.</li>
+<li>Mainkan dengan fader <b>Playbacks</b> di bawah (15 playback per bank, bisa diubah di Preferences).
+Tab <b>Cues</b>: mode chase / cue list, arah (forward, backward, bounce, random), loop, speed + TAP,
+crossfade %, release, follow, edit nilai cue, duplicate, copy/paste.</li>
+<li><b>Console → Connect console (Ctrl+K)</b>: plug &amp; play – scan Art-Net, pilih interface USB DMX
+(otomatis tersambung lagi bila dicabut/dicolok), MIDI in/out dengan MIDI Learn.</li>
 <li><b>Save (Ctrl+S)</b>: jika show berasal dari file .SHO, nama fixture, tipe, address, group dan nama playback
 <b>ditulis langsung ke file .SHO</b>, lalu file dibaca ulang untuk verifikasi. Salin file ke USB,
 colokkan ke console dan load.</li>
@@ -65,8 +78,13 @@ Esc  clear the command line
 Command line:  fixture 1 thru 8 at 50  |  group 2 at full  |  go 3  |  store 5  |  clear"""
 
 
+class MidiBridge(QObject):
+    """Moves MIDI callbacks (driver thread) onto the GUI thread."""
+    action = Signal(str, int, float, bool)
+
+
 class StoreDialog(QDialog):
-    def __init__(self, engine: Engine, current: Playback | None, parent=None):
+    def __init__(self, engine: Engine, current: Playback | None, parent=None, default_fade: float = 0.0):
         super().__init__(parent)
         self.setWindowTitle("Store programmer as cue")
         self.engine = engine
@@ -84,6 +102,7 @@ class StoreDialog(QDialog):
         self.fade = QDoubleSpinBox()
         self.fade.setRange(0, 600)
         self.fade.setSuffix(" s")
+        self.fade.setValue(default_fade)
         self.lbl = QLabel()
         self.num.valueChanged.connect(self._upd)
         n_fx = len(engine.effects)
@@ -157,7 +176,7 @@ class WelcomeDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, path: str | None = None, welcome: bool = True):
+    def __init__(self, path: str | None = None, welcome: bool = True, splash=None):
         super().__init__()
         self.resize(1680, 1000)
         self.setStyleSheet(DARK_QSS)
@@ -173,17 +192,32 @@ class MainWindow(QMainWindow):
         self.dmx_input = None
         self.cmd = CommandLine(self.engine)
         self.vis_source = "auto"
+        self.bridge = MidiBridge()
+        self.bridge.action.connect(self._midi_action)
+        self.midi = MidiManager(lambda a, t, v, on: self.bridge.action.emit(a, t, v, on))
+        self._ports_seen: set[str] = set()
+        if splash:
+            splash.step("Creating stage view…")
         self._build()
+        self._apply_prefs()
         self.runner = EngineRunner(self.engine, self._send)
         self.runner.start()
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._status)
         self.status_timer.start(500)
+        self.usb_timer = QTimer(self)
+        self.usb_timer.timeout.connect(self._usb_watch)
+        self.usb_timer.start(2000)
+        self.autosave_timer = QTimer(self)
+        self.autosave_timer.timeout.connect(self._autosave)
+        self._apply_prefs()
         self._update_title()
         if path:
+            if splash:
+                splash.step(f"Opening {os.path.basename(path)}…")
             self.open_path(path)
-        elif welcome:
-            QTimer.singleShot(200, self.show_welcome)
+        elif welcome and prefs.get(self.settings, "welcome"):
+            QTimer.singleShot(300, self.show_welcome)
 
     # ------------------------------------------------------------------ build
     def _build(self) -> None:
@@ -211,14 +245,19 @@ class MainWindow(QMainWindow):
         action(m, "Exit", self.close, "Ctrl+Q")
         m = mb.addMenu("&Edit")
         action(m, "Store programmer as cue…", self.store_dialog, "Ctrl+Return")
+        action(m, "Store programmer as preset…", lambda: (self.tabs.setCurrentWidget(self.presets),
+                                                           self.presets.store()), "Ctrl+P")
         action(m, "Clear programmer", lambda: self.prog.clear())
+        m.addSeparator()
+        action(m, "Preferences…", self.preferences, "Ctrl+,")
         m = mb.addMenu("&View")
         action(m, "3D view", lambda: self._view("3d"), "F5")
         action(m, "Top view (edit X/Y)", lambda: self._view("top"), "F6")
         action(m, "Front view (edit X/Z)", lambda: self._view("front"), "F7")
         action(m, "Reset camera", lambda: self.view.reset_camera())
         m = mb.addMenu("&Console")
-        action(m, "DMX output / console input…", self.io_settings)
+        action(m, "Connect console (DMX / Art-Net / MIDI)…", self.connect_wizard, "Ctrl+K")
+        action(m, "Advanced DMX input / output…", self.io_settings)
         action(m, "Console file info & check…", self.file_info)
         m = mb.addMenu("&Help")
         action(m, "Quick guide (Bahasa Indonesia)", self.show_guide, "F1")
@@ -231,7 +270,8 @@ class MainWindow(QMainWindow):
         self.addToolBar(tb)
         for text, fn, tip in (("📂 Open .SHO", self.import_dialog, "Open a CODE MINI 1000T show file"),
                               ("💾 Save", self.save, "Save (writes into the console file when opened from .SHO)"),
-                              ("🔌 DMX I/O", self.io_settings, "Art-Net / sACN / USB DMX output and console input")):
+                              ("🔗 Connect console", self.connect_wizard, "Plug & play: Art-Net, USB DMX, MIDI"),
+                              ("⚙ Preferences", self.preferences, "Application settings")):
             a = QAction(text, self)
             a.setToolTip(tip)
             a.triggered.connect(fn)
@@ -287,6 +327,9 @@ class MainWindow(QMainWindow):
         self.patch = PatchPanel(self.engine)
         self.patch.changed.connect(self._patch_changed)
         self.patch.selectFixtures.connect(self._select_from_patch)
+        self.presets = PresetsPanel(self.engine)
+        self.presets.applied.connect(self._selection_changed)
+        self.presets.changed.connect(self.mark_dirty)
         self.stage = StageEditor(self.engine, self.view)
         self.stage.changed.connect(self._layout_edited)
         self.monitor = DmxMonitor({"program output": self.prog_dmx, "console input": self.input_dmx,
@@ -295,6 +338,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self.sheet, "🎛 Fixtures / Groups")
         self.tabs.addTab(self.prog, "🎚 Programmer")
+        self.tabs.addTab(self.presets, "🎨 Presets")
         self.tabs.addTab(self.cues, "🎞 Cues")
         self.tabs.addTab(self.stage, "📐 Stage Layout")
         self.tabs.addTab(self.patch, "🔌 Patch")
@@ -306,6 +350,7 @@ class MainWindow(QMainWindow):
         top.setSizes([900, 760])
         self.execs = ExecutorBar(self.engine)
         self.execs.playbackSelected.connect(self._edit_playback)
+        self.execs.playbackTriggered.connect(self._feedback)
         vs = QSplitter(Qt.Vertical)
         vs.addWidget(top)
         vs.addWidget(self.execs)
@@ -331,7 +376,10 @@ class MainWindow(QMainWindow):
         self.st_out = QLabel("Output: off")
         self.st_in = QLabel("Input: off")
         self.st_show = QLabel("")
-        for w in (self.st_show, self.st_out, self.st_in):
+        self.led_net, self.led_usb, self.led_midi = QLabel("● Art-Net"), QLabel("● USB"), QLabel("● MIDI")
+        for led in (self.led_net, self.led_usb, self.led_midi):
+            led.setToolTip("grey = off, orange = waiting / unplugged, green = connected. Click Connect console.")
+        for w in (self.st_show, self.st_out, self.st_in, self.led_net, self.led_usb, self.led_midi):
             self.statusBar().addPermanentWidget(w)
         QShortcut(QKeySequence("Escape"), self, activated=self.cmdline.clear)
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self._go_current)
@@ -389,6 +437,8 @@ class MainWindow(QMainWindow):
                 self.outputs.append(SacnOutput(cfg.sacn_universe_offset))
             if cfg.enttec_enabled and cfg.enttec_port:
                 self.outputs.append(EnttecProOutput(cfg.enttec_port))
+            if cfg.opendmx_enabled and cfg.opendmx_port:
+                self.outputs.append(OpenDmxOutput(cfg.opendmx_port))
         except Exception as e:
             errors.append(f"Output: {e}")
         try:
@@ -401,8 +451,113 @@ class MainWindow(QMainWindow):
                 self.dmx_input.start()
         except Exception as e:
             errors.append(f"Input: {e}")
-        if errors:
-            QMessageBox.warning(self, "DMX I/O", "\n".join(errors))
+        self.midi.mapping = list(cfg.midi_map)
+        if cfg.midi_in or cfg.midi_out:
+            errors += [f"MIDI: {e}" for e in self.midi.open(cfg.midi_in, cfg.midi_out)]
+        else:
+            self.midi.close()
+        if errors and not getattr(self, "_quiet_io", False):
+            QMessageBox.warning(self, "Connections", "\n".join(errors))
+
+    def stop_input(self) -> None:
+        if self.dmx_input:
+            self.dmx_input.stop()
+            self.dmx_input = None
+
+    def connect_wizard(self) -> None:
+        d = ConnectDialog(self.engine.show.output, self.midi, self.engine.show.console_info.get("ip", ""),
+                          self.stop_input, self)
+        if d.exec():
+            d.apply()
+            self.mark_dirty()
+        self.restart_io()
+
+    def preferences(self) -> None:
+        d = prefs.PreferencesDialog(self.settings, self.connect_wizard, self.io_settings, self)
+        if d.exec():
+            d.apply()
+            self._apply_prefs()
+
+    def _apply_prefs(self) -> None:
+        s = self.settings
+        self.execs.set_per_page(prefs.get(s, "per_page"))
+        self.view.haze = prefs.get(s, "haze") / 100
+        self.view.show_models = prefs.get(s, "models")
+        self.view.show_labels = prefs.get(s, "labels")
+        m = prefs.get(s, "autosave_min")
+        if m > 0:
+            self.autosave_timer.start(m * 60000) if hasattr(self, "autosave_timer") else None
+        elif hasattr(self, "autosave_timer"):
+            self.autosave_timer.stop()
+
+    def _autosave(self) -> None:
+        if not self.dirty:
+            return
+        try:
+            if self.doc:
+                companion.save(self.engine.show)
+                self.statusBar().showMessage("Autosaved MiniDesk project (console file not touched)", 4000)
+            elif self.path:
+                self.engine.show.save(self.path)
+                self.dirty = False
+                self._update_title()
+                self._update_banner()
+        except OSError:
+            pass
+
+    def _usb_watch(self) -> None:
+        """Plug & play: notice USB DMX interfaces being plugged in / out."""
+        ports = {p["port"]: p for p in describe_serial_ports() if p["dmx"]}
+        cfg = self.engine.show.output
+        wanted = {x for x in ((cfg.enttec_port if cfg.enttec_enabled else ""),
+                              (cfg.opendmx_port if cfg.opendmx_enabled else ""),
+                              (cfg.input_enttec_port if cfg.input_mode == "enttec" else "")) if x}
+        new = set(ports) - self._ports_seen
+        gone = self._ports_seen - set(ports)
+        self._ports_seen = set(ports)
+        if gone & wanted:
+            self.statusBar().showMessage(f"USB DMX interface unplugged: {', '.join(gone & wanted)}", 8000)
+        if new & wanted and cfg.auto_reconnect:
+            self._quiet_io = True
+            self.restart_io()
+            self._quiet_io = False
+            self.statusBar().showMessage(f"USB DMX interface reconnected: {', '.join(new & wanted)}", 8000)
+        elif new and not wanted:
+            p = ports[sorted(new)[0]]
+            self.statusBar().showMessage(f"{p['kind']} detected on {p['port']} – Console → Connect console to "
+                                         "use it", 12000)
+        self._usb_present = bool(wanted & set(ports)) if wanted else None
+
+    def _feedback(self, st) -> None:
+        if self.engine.show.output.midi_feedback:
+            self.midi.send_note((st.pb.number - 1) % 128)
+
+    def _midi_action(self, action: str, target: int, value: float, on: bool) -> None:
+        e = self.engine
+        st = next((x for x in e.states if x.pb.number == target), None)
+        if action.startswith("exec_") and st is None:
+            return
+        if action == "exec_go" and on:
+            e.go(st)
+        elif action == "exec_back" and on:
+            e.back(st)
+        elif action == "exec_flash":
+            e.set_flash(st, on)
+        elif action == "exec_fader":
+            e.set_level(st, value)
+        elif action == "exec_stop" and on:
+            e.stop(st, fade=True)
+        elif action == "gm":
+            self.gm.setValue(round(value * 100))
+        elif action == "blackout" and on:
+            self.a_bo.setChecked(not self.a_bo.isChecked())
+        elif action == "bank_next" and on:
+            self.execs.bank_step(1)
+        elif action == "bank_prev" and on:
+            self.execs.bank_step(-1)
+        elif action == "release_all" and on:
+            e.release_all()
+        self.execs.sync()
 
     def io_settings(self) -> None:
         d = IOSettingsDialog(self.engine.show.output, self.engine.show.console_info.get("ip", ""), self)
@@ -429,6 +584,15 @@ class MainWindow(QMainWindow):
         else:
             self.st_in.setText("Input: off")
             self.st_in.setStyleSheet("")
+        def led(w, state):
+            w.setStyleSheet({"on": "color:#5f5;", "wait": "color:#fa5;", "off": "color:#555;"}[state])
+        net = cfg.artnet_enabled or cfg.sacn_enabled or cfg.input_mode == "artnet"
+        led(self.led_net, "off" if not net else
+            ("on" if (cfg.input_mode != "artnet" or (self.dmx_input and self.dmx_input.alive)) else "wait"))
+        usb = getattr(self, "_usb_present", None)
+        led(self.led_usb, "off" if usb is None else ("on" if usb else "wait"))
+        led(self.led_midi, "on" if (self.midi.inp or self.midi.out) else
+            ("wait" if (cfg.midi_in or cfg.midi_out) else "off"))
         running = sum(1 for s in self.engine.states if s.running)
         self.st_show.setText(f"{len(self.engine.show.fixtures)} fixtures  |  {running} playback(s) running  |  "
                              f"{len(self.engine.effects)} effect(s) in programmer"
@@ -525,7 +689,8 @@ class MainWindow(QMainWindow):
         if self.engine.programmer_empty:
             QMessageBox.information(self, "Store", "The programmer is empty – set some values or start an effect.")
             return
-        d = StoreDialog(self.engine, self.cues.st.pb if self.cues.st else None, self)
+        d = StoreDialog(self.engine, self.cues.st.pb if self.cues.st else None, self,
+                        prefs.get(self.settings, "default_fade"))
         if d.exec():
             pb = d.apply()
             st = self.engine.state_for(pb)
@@ -600,7 +765,7 @@ class MainWindow(QMainWindow):
                 self.open_path(p)
 
     def maybe_save(self) -> bool:
-        if not self.dirty:
+        if not self.dirty or not prefs.get(self.settings, "confirm_exit"):
             return True
         r = QMessageBox.question(self, "Unsaved changes", "Save your changes first?",
                                  QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
@@ -619,6 +784,7 @@ class MainWindow(QMainWindow):
         self.prog.rebuild()
         self.prog.fx.refresh()
         self.patch.rebuild()
+        self.presets.rebuild()
         self.stage.refresh()
         self.cues.bind(None)
         if any(p.steps for p in show.playbacks):
@@ -754,4 +920,5 @@ class MainWindow(QMainWindow):
                 pass
         if self.dmx_input:
             self.dmx_input.stop()
+        self.midi.close()
         super().closeEvent(e)
