@@ -58,6 +58,25 @@ Butuh Python 3.10 atau lebih baru (Windows / macOS / Linux).
 pip install -r requirements.txt
 ```
 
+### Windows: error "Long Path" / `No such file or directory ... PySide6\qml\...`
+
+Python dari Microsoft Store menyimpan paket di folder yang sangat panjang, sehingga instalasi
+PySide6 gagal karena batas 260 karakter Windows. Solusi termudah: pakai virtual environment di
+folder pendek (jalankan di PowerShell, di folder proyek):
+
+```powershell
+python -m venv C:\venv\minidesk
+C:\venv\minidesk\Scripts\python -m pip install -r requirements.txt
+C:\venv\minidesk\Scripts\python -m minidesk samples\GMS_MATT.SHO
+```
+
+`run_windows.bat` otomatis memakai `C:\venv\minidesk` bila ada.
+Alternatif: aktifkan Long Path Support (PowerShell *Run as Administrator*), lalu buka ulang terminal:
+
+```powershell
+New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force
+```
+
 ## Menjalankan
 
 ```bash
