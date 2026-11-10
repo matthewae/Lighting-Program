@@ -91,7 +91,8 @@ class FixtureType:
             self.model = "fog_vertical" if (" vs" in f" {n}" or "vs " in n or "vertical" in n or "1500vs" in n) \
                 else ("hazer" if "haz" in n else "fog")
         elif self.is_moving:
-            self.model = "hybrid" if ("bsw" in n or "hybrid" in n) else self.kind
+            from .meshes import bundled_defaults
+            self.model = bundled_defaults().get("moving") or ("hybrid" if ("bsw" in n or "hybrid" in n) else self.kind)
         else:
             self.model = self.kind if self.kind != "generic" else "par" if attrs & {"red", "green", "blue"} else "generic"
         # moving heads should start with an open shutter
@@ -322,6 +323,7 @@ class Show:
     stage_height: float = 6.0
     console_info: dict = field(default_factory=dict)
     source_path: str = ""          # console .SHO file this show was imported from
+    truss_model: str = ""          # "" = default (bundled user truss if present), "builtin", or a file
 
     # ---------------------------------------------------------------- lookup
     def fixture(self, fid: int) -> Optional[Fixture]:
@@ -371,6 +373,7 @@ class Show:
             "output": asdict(self.output),
             "console_info": self.console_info,
             "source_path": self.source_path,
+            "truss_model": self.truss_model,
         }
 
     @staticmethod
@@ -392,6 +395,7 @@ class Show:
                                        if k in OutputConfig.__dataclass_fields__})
         s.console_info = d.get("console_info", {})
         s.source_path = d.get("source_path", "")
+        s.truss_model = d.get("truss_model", "")
         return s
 
     def save(self, path: str) -> None:

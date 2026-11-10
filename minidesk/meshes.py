@@ -87,6 +87,7 @@ class Mesh:
     parts: dict = field(default_factory=dict)        # name -> Part
     pivot: tuple = (0.0, 0.0, 0.0)
     cull: bool = True                                 # built-in meshes have consistent winding
+    objects: list | None = None                       # raw objects (FBX) before assembling
 
     def part(self, name: str) -> Part:
         if name not in self.parts:
@@ -566,19 +567,165 @@ def _default_pivot(mesh: Mesh):
     return tuple(float(x) for x in (lo + hi) / 2)
 
 
-def load_model(path: str) -> Mesh:
+BUNDLED = os.path.join(os.path.dirname(__file__), "models", "user")
+DARK_FIX = (52, 54, 60)
+
+
+def resolve(path: str) -> str:
+    """'bundled:NAME' refers to a model shipped in minidesk/models/user/."""
+    if path.startswith("bundled:"):
+        return os.path.join(BUNDLED, path[8:])
+    return path
+
+
+def bundled_defaults() -> dict:
+    try:
+        with open(os.path.join(BUNDLED, "defaults.json"), encoding="utf-8") as fh:
+            d = json.load(fh)
+        return {k: v for k, v in d.items() if os.path.exists(resolve(v))}
+    except (OSError, ValueError):
+        return {}
+
+
+def load_fbx(path: str) -> Mesh:
+    from . import fbx
+    objs, up, _unit = fbx.load(path)
+    mesh = Mesh(os.path.basename(path), cull=False)
+    mesh.objects = []
+    for o in objs:
+        V = o["verts"]
+        if up == 1:                                   # Y-up -> Z-up
+            V = np.c_[V[:, 0], -V[:, 2], V[:, 1]]
+        col = o["colour"]
+        if max(col) < 30:                             # pure black materials: show dark grey
+            col = DARK_FIX
+        names = " ".join([o["name"]] + o["materials"])
+        em = _is_emissive(names) or any(w in names for w in ("球", "sphere", "Sphere"))
+        mesh.objects.append({"name": o["name"], "path": o["path"], "V": V, "faces": o["faces"],
+                             "colour": col, "emissive": em})
+    return mesh
+
+
+def _assemble(mesh: Mesh, objects: list) -> None:
+    """Put raw objects into base / yoke / head parts by name."""
+    for o in objects:
+        part = mesh.part(o.get("part") or _part_name(" ".join(o.get("path") or [o["name"]])))
+        off = len(part.verts)
+        part.verts.extend(tuple(v) for v in o["V"])
+        for f in o["faces"]:
+            if len(f) >= 3:
+                part.faces.append([off + i for i in f])
+                part.colors.append(o["colour"])
+                part.emissive.append(o["emissive"])
+
+
+def auto_rig(objects: list) -> tuple:
+    """Moving head without named parts: find base / yoke / head from the geometry, turn the
+    yoke arms onto the X axis and rotate the head so its lens points along +Z.
+    Returns the pivot."""
+    allv = np.concatenate([o["V"] for o in objects])
+    z0, z1 = allv[:, 2].min(), allv[:, 2].max()
+    H = (z1 - z0) or 1.0
+    for o in objects:
+        a, b = (o["V"][:, 2].min() - z0) / H, (o["V"][:, 2].max() - z0) / H
+        o["part"] = "base" if b <= 0.27 else ("yoke" if a < 0.3 and b > 0.6 else "head")
+    yoke = [o for o in objects if o["part"] == "yoke"]
+    if yoke:
+        yv = np.concatenate([o["V"] for o in yoke])
+        ext = yv.max(axis=0) - yv.min(axis=0)
+        if ext[1] > ext[0]:                            # arms along Y -> rotate 90 deg about Z
+            R = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1.0]])
+            for o in objects:
+                o["V"] = o["V"] @ R.T
+    head = [o for o in objects if o["part"] == "head"]
+    if not head:
+        return (0.0, 0.0, 0.0)
+    hv = np.concatenate([o["V"] for o in head])
+    pivot = (hv.min(axis=0) + hv.max(axis=0)) / 2
+    lens = [o for o in head if o["emissive"]]
+    if not lens:
+        far = max(head, key=lambda o: np.linalg.norm(o["V"].mean(axis=0) - pivot)
+                  / (1.0 + float(np.ptp(o["V"], axis=0).max()) / H))
+        far["emissive"] = True
+        lens = [far]
+    f = np.concatenate([o["V"] for o in lens]).mean(axis=0) - pivot
+    a = math.atan2(f[1], f[2])                         # rotate around X so the lens points to +Z
+    c, s_ = math.cos(a), math.sin(a)
+    Rx = np.array([[1, 0, 0], [0, c, -s_], [0, s_, c]])
+    for o in head:
+        o["V"] = (o["V"] - pivot) @ Rx.T + pivot
+    return tuple(float(x) for x in pivot)
+
+
+def load_model(path: str, kind: str = "") -> Mesh:
+    path = resolve(path)
     ext = os.path.splitext(path)[1].lower()
-    if ext == ".obj":
+    if ext == ".fbx":
+        m = load_fbx(path)
+    elif ext == ".obj":
         m = load_obj(path)
     elif ext in (".glb", ".gltf"):
         m = load_gltf(path)
     elif ext == ".stl":
         m = load_stl(path)
     else:
-        raise ValueError(f"Unsupported model format: {ext} (use OBJ, GLB/glTF or STL)")
+        raise ValueError(f"Unsupported model format: {ext} (use OBJ, FBX, GLB/glTF or STL)")
+    objects = getattr(m, "objects", None)
+    if objects is None:                              # OBJ/GLB/STL loaded straight into parts
+        objects = [{"name": n, "path": [n], "V": p.V, "faces": p.faces, "colour": None,
+                    "emissive": None, "_part": p} for n, p in m.parts.items()]
+    named = any(_part_name(" ".join(o.get("path") or [o["name"]])) != "base" for o in objects)
+    moving = kind in ("beam", "spot", "wash", "hybrid")
+    if getattr(m, "objects", None) is not None:
+        pivot = auto_rig(objects) if (moving and not named) else None
+        mesh = Mesh(m.name, cull=False)
+        _assemble(mesh, objects)
+        mesh.finalize()
+        mesh.pivot = pivot if pivot is not None else _default_pivot(mesh)
+        m = mesh
+    elif moving and not named and len(m.parts) == 1 and len(m.parts.get("base", Part("x")).faces) > 0:
+        # single-object OBJ/GLB moving head: split it per connected piece and rig it
+        p = m.parts["base"]
+        objs = _split_components(p)
+        if len(objs) > 1:
+            pivot = auto_rig(objs)
+            mesh = Mesh(m.name, cull=False)
+            _assemble(mesh, objs)
+            mesh.finalize()
+            mesh.pivot = pivot
+            m = mesh
     if not m.parts:
         raise ValueError("The model contains no polygons")
     return m
+
+
+def _split_components(part: Part) -> list:
+    n = len(part.verts)
+    par = list(range(n))
+
+    def find(a):
+        while par[a] != a:
+            par[a] = par[par[a]]
+            a = par[a]
+        return a
+    for f in part.faces:
+        r = find(f[0])
+        for i in f[1:]:
+            q = find(i)
+            if q != r:
+                par[q] = r
+    groups: dict = {}
+    for fi, f in enumerate(part.faces):
+        groups.setdefault(find(f[0]), []).append(fi)
+    out = []
+    V = part.V
+    for k, fis in groups.items():
+        vids = sorted({i for fi in fis for i in part.faces[fi]})
+        remap = {v: j for j, v in enumerate(vids)}
+        out.append({"name": f"piece{len(out)}", "path": [], "V": V[vids],
+                    "faces": [[remap[i] for i in part.faces[fi]] for fi in fis],
+                    "colour": part.colors[fis[0]], "emissive": part.emissive[fis[0]]})
+    return out
 
 
 TYPICAL_SIZE = {"beam": 0.55, "spot": 0.7, "hybrid": 0.7, "wash": 0.6, "par": 0.3, "fresnel": 0.45,
@@ -608,7 +755,7 @@ def get_mesh(model: str, kind: str, scale: float = 1.0, lod: int = 1) -> Mesh | 
         if name in BUILTIN:
             m = build_model(name, lod)
         else:
-            base = load_model(name)
+            base = load_model(name, kind)
             k = fit_scale(base, kind) * scale
             m = base.scaled(k)
             if lod == 0 and m.face_count > 400:
@@ -617,6 +764,10 @@ def get_mesh(model: str, kind: str, scale: float = 1.0, lod: int = 1) -> Mesh | 
         m = build_model(default_model(kind), lod)
     _cache[key] = m
     return m
+
+
+def truss_default() -> str:
+    return bundled_defaults().get("truss", "builtin")
 
 
 def default_model(kind: str) -> str:

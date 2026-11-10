@@ -463,6 +463,27 @@ def test_stl_and_gltf_import(tmp_path):
 def test_model_choice_for_console_fixtures(imported):
     show, _ = imported
     model = {t.name: t.model for t in show.types.values()}
-    assert model["CM-280V2@16"] == "beam" and model["AS_BSW350"] == "hybrid"
+    from minidesk.meshes import bundled_defaults
+    mover = bundled_defaults().get("moving")
+    assert model["CM-280V2@16"] == (mover or "beam") and model["AS_BSW350"] == (mover or "hybrid")
     assert model["CLED-543"] == "par" and model["STROBE 2.5"] == "strobe"
     assert model["DSK-1500VS"] == "fog_vertical" and model["HAZER"] == "hazer"
+
+
+def test_user_models_fbx_and_truss():
+    from minidesk import truss_model
+    from minidesk.meshes import BUNDLED, load_model
+    import os
+    fbx = os.path.join(BUNDLED, "Moveing_head_1_A.fbx")
+    if not os.path.exists(fbx):
+        pytest.skip("bundled user models missing")
+    m = load_model(fbx, "beam")
+    assert {"base", "yoke", "head"} <= set(m.parts)
+    head = m.parts["head"]
+    lens = head.C[head.EM].mean(axis=0)
+    assert lens[2] > m.pivot[2]                      # lens points up (+Z) at tilt centre
+    t = truss_model.analyse(os.path.join(BUNDLED, "box_truss_12in.obj"))
+    assert abs(t["width"] - 0.3048) < 0.002
+    assert [round(s["length"], 2) for s in t["segments"]] == [3.05, 2.44, 1.83, 1.52, 0.91]
+    tiles = truss_model.tile(6.1, t["segments"])
+    assert len(tiles) == 2

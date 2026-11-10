@@ -33,9 +33,16 @@ Trusses / towers are generated automatically from the fixture positions.
 |---|---|
 | **OBJ** (+ `.mtl`) | recommended; materials give the colours |
 | **GLB / glTF 2.0** | node names give the parts, Y-up is converted automatically |
+| **FBX** (binary 7.x) | e.g. Blender / 3ds Max exports; colours from materials |
 | **STL** | one colour, no parts |
 
-Other formats (3DS, FBX, SKP, DAE, DWG): import them in Blender and export OBJ or GLB.
+Other formats (3DS, SKP, DAE, DWG, ASCII FBX): import them in Blender and export OBJ, GLB or FBX.
+
+**Auto-rig for moving heads:** when the parts are not named `base`/`yoke`/`head` (like
+`Moveing_head_1_A.fbx`, whose objects are called 円柱 / 球 / 立方体), MiniDesk finds them from the
+geometry: pieces at the bottom = base, the piece reaching from bottom to top = yoke, the rest =
+head. The yoke arms are turned onto the tilt axis and the head is rotated so that its lens (an
+emissive / "lens" / sphere object, or the part furthest from the pivot) points along the beam.
 
 Conventions:
 
@@ -54,3 +61,20 @@ Conventions:
 
 Imported files are copied to `~/.minidesk/models/` so the show keeps working when the original
 file is moved.
+
+## Models supplied with this project (`minidesk/models/user/`)
+
+| File | Used as |
+|---|---|
+| `Moveing_head_1_A.fbx` | default model for all moving heads (CM-280V2, AS_BSW350) |
+| `box_truss_12in.obj` | default truss / tower model (12" box truss: 10, 8, 6, 5 and 3 ft segments) |
+
+The defaults are set in `minidesk/models/user/defaults.json`. These files were supplied by the
+project owner; check their licence before redistributing them.
+
+## Truss models
+
+**Stage Layout → Rigging / truss model.** A truss model is analysed once: every straight segment
+(one OBJ group / object per segment) is reduced to its tubes – the 4 chords and every diagonal –
+which are drawn as lines with their real thickness. Trusses are filled with the longest segments
+that fit, just like a real rig. The analysis is cached in `~/.minidesk/cache/`.

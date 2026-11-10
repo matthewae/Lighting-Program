@@ -43,6 +43,7 @@ def save(show: Show) -> str:
     base_hash = show.console_info.get("_step_hash", {})
     data = {
         "stage": [show.stage_width, show.stage_depth, show.stage_height],
+        "truss_model": show.truss_model,
         "positions": {str(f.slot if f.slot >= 0 else -f.fid): [f.x, f.y, f.z, f.mount, f.rot, f.aim]
                       for f in show.fixtures},
         "types": {k: {"kind": t.kind, "beam_angle": t.beam_angle, "pan_range": t.pan_range,
@@ -88,6 +89,7 @@ def load(show: Show) -> bool:
     st = data.get("stage")
     if st:
         show.stage_width, show.stage_depth, show.stage_height = st
+    show.truss_model = data.get("truss_model", show.truss_model)
     pos = data.get("positions", {})
     for f in show.fixtures:
         v = pos.get(str(f.slot if f.slot >= 0 else -f.fid))
@@ -99,8 +101,8 @@ def load(show: Show) -> bool:
             continue
         ft.kind, ft.beam_angle = t.get("kind", ft.kind), t.get("beam_angle", ft.beam_angle)
         ft.pan_range, ft.tilt_range = t.get("pan_range", ft.pan_range), t.get("tilt_range", ft.tilt_range)
-        if t.get("model") and (t["model"] in __import__("minidesk.meshes", fromlist=["BUILTIN"]).BUILTIN
-                               or os.path.exists(t["model"])):
+        from .meshes import BUILTIN, resolve
+        if t.get("model") and (t["model"] in BUILTIN or os.path.exists(resolve(t["model"]))):
             ft.model = t["model"]
         ft.model_scale = t.get("model_scale", ft.model_scale)
         chans = t.get("channels", [])

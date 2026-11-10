@@ -65,6 +65,16 @@ class StageEditor(QWidget):
         hv.addWidget(self.cb_labels)
         lay.addWidget(gv)
 
+        gt0 = QGroupBox("Rigging / truss model")
+        ht = QHBoxLayout(gt0)
+        self.truss = QComboBox()
+        self.truss.currentIndexChanged.connect(self._truss_changed)
+        b_imp = QPushButton("Import truss model (OBJ)…")
+        b_imp.clicked.connect(self._import_truss)
+        ht.addWidget(self.truss, 1)
+        ht.addWidget(b_imp)
+        lay.addWidget(gt0)
+
         gs = QGroupBox("Stage size")
         fs = QHBoxLayout(gs)
         self.w, self.d, self.h = _spin(2, 60), _spin(2, 60), _spin(2, 30)
@@ -134,6 +144,7 @@ class StageEditor(QWidget):
     def refresh(self) -> None:
         self._loading = True
         show = self.engine.show
+        self._fill_truss()
         self.w.setValue(show.stage_width)
         self.d.setValue(show.stage_depth)
         self.h.setValue(show.stage_height)
@@ -154,6 +165,50 @@ class StageEditor(QWidget):
             self.sel_label.setText("Nothing selected – click fixtures in the stage view or the Fixtures tab")
         self.sync_mode()
         self._loading = False
+
+    def _fill_truss(self) -> None:
+        from .. import meshes
+        self.truss.blockSignals(True)
+        self.truss.clear()
+        self.truss.addItem("Default" + (" (bundled 12\" box truss)" if meshes.truss_default() != "builtin" else ""), "")
+        self.truss.addItem("Simple box truss (built-in)", "builtin")
+        cur = self.engine.show.truss_model
+        if cur and cur != "builtin":
+            import os
+            self.truss.addItem(f"File: {os.path.basename(meshes.resolve(cur))}", cur)
+        self.truss.setCurrentIndex(max(0, self.truss.findData(cur)))
+        self.truss.blockSignals(False)
+
+    def _truss_changed(self, *_):
+        if self._loading:
+            return
+        self.engine.show.truss_model = self.truss.currentData() or ""
+        self.changed.emit()
+
+    def _import_truss(self):
+        import os
+        import shutil
+        from PySide6.QtWidgets import QFileDialog
+        from .. import truss_model
+        path, _ = QFileDialog.getOpenFileName(self, "Import truss model", "",
+                                              "Truss model (*.obj *.glb *.gltf *.fbx);;All files (*)")
+        if not path:
+            return
+        try:
+            data = truss_model.analyse(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Truss model", f"Could not use this model:\n{e}")
+            return
+        dst_dir = os.path.join(os.path.expanduser("~"), ".minidesk", "models")
+        os.makedirs(dst_dir, exist_ok=True)
+        dst = os.path.join(dst_dir, os.path.basename(path))
+        if os.path.abspath(dst) != os.path.abspath(path):
+            shutil.copy2(path, dst)
+        self.engine.show.truss_model = dst
+        self._fill_truss()
+        segs = ", ".join(f"{s['length']:.2f} m" for s in data["segments"])
+        QMessageBox.information(self, "Truss model", f"Truss width {data['width'] * 100:.1f} cm, segments: {segs}")
+        self.changed.emit()
 
     def _stage(self, *_):
         if self._loading:

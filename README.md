@@ -17,6 +17,8 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
 
 ![Model 3D fixture](docs/screenshot_models.png)
 
+![Panggung dengan truss 12" dari model OBJ](docs/screenshot_stage_truss.png)
+
 ![Programmer + effects + visualizer 3D](docs/screenshot_programmer.png)
 
 ![Beam: gobo, prism, frost](docs/screenshot_beam.png)
@@ -61,8 +63,10 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
   lensa), LED PAR, fresnel dengan barn door, strobe bar, LED bar, blinder, hazer, fog machine dan
   fog vertikal dengan LED (dengan asap), plus **box truss & tower** otomatis. Model dipilih otomatis
   dari nama fixture (CM-280 → beam, AS_BSW350 → hybrid, CLED-543/PAR → LED PAR, DSK-1500VS → fog
-  vertikal, …) dan bisa diganti / **di-import sendiri (OBJ, GLB/glTF, STL)** dengan preview 3D di
-  *Patch → Edit fixture type & 3D model*. Lihat [`docs/MODELS.md`](docs/MODELS.md).
+  vertikal, …) dan bisa diganti / **di-import sendiri (OBJ, FBX, GLB/glTF, STL)** dengan preview 3D di
+  *Patch → Edit fixture type & 3D model* (moving head tanpa nama bagian di-*auto-rig*).
+  Default proyek ini: moving head = `Moveing_head_1_A.fbx`, truss = box truss 12" dari
+  `box_truss_12in.obj` (pola diagonal asli). Lihat [`docs/MODELS.md`](docs/MODELS.md).
 - **Stage Layout** (tab khusus): ukuran panggung, view **Top** (geser kiri/kanan + depan/belakang)
   dan **Front** (geser kiri/kanan + tinggi), drag fixture dengan snap grid, pilih banyak (Ctrl+klik
   atau tarik kotak), form X/Y/Z, mount, arah (yaw) dan tilt, tombol *Line up*, *Distribute*,

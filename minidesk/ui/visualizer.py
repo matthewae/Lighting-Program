@@ -463,6 +463,11 @@ class StageView(QWidget):
             p.setPen(QPen(QColor(95, 98, 110), 4))
             self._line(p, a, b)
             return
+        from .. import meshes, truss_model
+        tm = truss_model.load(self.show.truss_model or meshes.truss_default())
+        if tm:
+            self._draw_truss_model(p, cam, np.array(a, float), np.array(b, float), tm)
+            return
         A, B = np.array(a, float), np.array(b, float)
         L = float(np.linalg.norm(B - A)) or 1.0
         u = (B - A) / L
@@ -499,6 +504,38 @@ class StageView(QWidget):
                     rl.append(QLineF(sx[i, 2 + c0], sy[i, 2 + c0], sx[i + 1, 2 + c1], sy[i + 1, 2 + c1]))
             p.setPen(QPen(QColor(150, 153, 162), max(0.8, min(2.5, px * 0.6))))
             p.drawLines(rl)
+
+    def _draw_truss_model(self, p: QPainter, cam, A, B, tm: dict) -> None:
+        """Truss from an imported model: segments tiled along A→B, tubes drawn as thick lines."""
+        import numpy as np
+        from ..truss_model import tile
+        L = float(np.linalg.norm(B - A)) or 1.0
+        u = (B - A) / L
+        side = np.array([0.0, 1.0, 0.0]) if abs(u[1]) < 0.9 else np.array([1.0, 0.0, 0.0])
+        w = np.cross(u, side)
+        w /= np.linalg.norm(w)
+        side = np.cross(w, u)
+        mid = tuple((A + B) / 2)
+        detail = cam.px_size(mid, tm["width"]) > 14
+        chords, braces = [], []
+        for off, seg in tile(L, tm["segments"]):
+            o = A + u * off
+            for t in seg["chords"]:
+                chords.append((o + u * t[0] + side * t[1] + w * t[2], o + u * t[3] + side * t[4] + w * t[5], t[6]))
+            if detail:
+                for t in seg["braces"]:
+                    braces.append((o + u * t[0] + side * t[1] + w * t[2], o + u * t[3] + side * t[4] + w * t[5], t[6]))
+        for tubes, colour in ((chords, QColor(185, 188, 196)), (braces, QColor(150, 153, 162))):
+            if not tubes:
+                continue
+            P = np.array([[t[0], t[1]] for t in tubes]).reshape(-1, 3)
+            C = cam.to_cam(P)
+            sx, sy = cam.project(C)
+            r = sum(t[2] for t in tubes) / len(tubes)
+            p.setPen(QPen(colour, max(0.8, min(6.0, cam.px_size(mid, 2 * r)))))
+            lines = [QLineF(sx[2 * i], sy[2 * i], sx[2 * i + 1], sy[2 * i + 1])
+                     for i in range(len(tubes)) if C[2 * i, 1] > 0.25 and C[2 * i + 1, 1] > 0.25]
+            p.drawLines(lines)
 
     @staticmethod
     def _offset_dir(d: Vec, ang: float, phi: float) -> Vec:
