@@ -132,6 +132,9 @@ class Fixture:
     rot: float = 0.0              # yaw in degrees (0 = facing the audience / downstage)
     aim: float = 30.0             # fixed fixtures: tilt from straight down/up toward 'rot'
     slot: int = -1                # fixture index in the console file (-1 = new)
+    invert_pan: bool = False      # patch options (like the console's pan/tilt invert & swap)
+    invert_tilt: bool = False
+    swap_pan_tilt: bool = False
 
     @property
     def patched(self) -> bool:
@@ -146,19 +149,52 @@ class Group:
 
 
 EFFECT_TYPES = {
-    # key: (label, feature)
+    # key: (label, feature)  – keys stay stable because they are stored in shows
+    # Position (pan / tilt shapes)
     "circle": ("Circle", "Position"),
+    "ellipse": ("Ellipse", "Position"),
+    "diamond": ("Diamond", "Position"),
+    "square": ("Square", "Position"),
+    "triangle": ("Triangle", "Position"),
     "figure8": ("Figure 8", "Position"),
-    "pan_wave": ("Pan wave", "Position"),
-    "tilt_wave": ("Tilt wave", "Position"),
-    "ballyhoo": ("Ballyhoo (random sweep)", "Position"),
+    "s_shape": ("S shape", "Position"),
+    "cross": ("Cross", "Position"),
+    "star": ("Star", "Position"),
+    "spiral": ("Spiral", "Position"),
+    "pan_saw": ("Pan saw", "Position"),
+    "tilt_saw": ("Tilt saw", "Position"),
+    "pan_wave": ("Pan sine", "Position"),
+    "tilt_wave": ("Tilt sine", "Position"),
+    "pan_swing": ("Pan swing (triangle)", "Position"),
+    "tilt_swing": ("Tilt swing (triangle)", "Position"),
+    "pan_step": ("Pan step", "Position"),
+    "tilt_step": ("Tilt step", "Position"),
+    "ballyhoo": ("Ballyhoo", "Position"),
+    "pos_random": ("Random position", "Position"),
+    # Intensity (dimmer)
     "dim_sine": ("Dimmer sine", "Intensity"),
-    "dim_pulse": ("Dimmer pulse / ramp", "Intensity"),
-    "dim_chase": ("Dimmer chase (on/off)", "Intensity"),
+    "dim_saw": ("Dimmer saw (ramp up)", "Intensity"),
+    "dim_pulse": ("Dimmer ramp down", "Intensity"),
+    "dim_triangle": ("Dimmer triangle", "Intensity"),
+    "dim_chase": ("Dimmer chase / step", "Intensity"),
+    "dim_fade": ("Dimmer soft chase", "Intensity"),
     "dim_random": ("Dimmer random", "Intensity"),
-    "strobe": ("Strobe flash", "Intensity"),
+    "sparkle": ("Sparkle", "Intensity"),
+    "strobe": ("Strobe", "Intensity"),
+    "strobe_random": ("Random strobe", "Intensity"),
+    # Colour
     "rainbow": ("Rainbow", "Color"),
-    "color_chase": ("Color chase (2 colours)", "Color"),
+    "color_chase": ("Colour chase A/B", "Color"),
+    "color_fade": ("Colour fade A↔B", "Color"),
+    "rgb_step": ("RGB step (R-G-B-W)", "Color"),
+    "color_random": ("Random colour", "Color"),
+    # Beam
+    "gobo_step": ("Gobo step", "Beam"),
+    "zoom_wave": ("Zoom wave", "Beam"),
+    "focus_wave": ("Focus wave", "Beam"),
+    "iris_wave": ("Iris wave", "Beam"),
+    "prism_flash": ("Prism on/off", "Beam"),
+    "frost_wave": ("Frost wave", "Beam"),
 }
 
 

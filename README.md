@@ -21,6 +21,8 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
 
 ![Programmer + effects + visualizer 3D](docs/screenshot_programmer.png)
 
+![Effects: 41 bentuk effect](docs/screenshot_effects.png)
+
 ![Beam: gobo, prism, frost](docs/screenshot_beam.png)
 
 ![Cue list / playback lengkap](docs/screenshot_cues.png)
@@ -52,6 +54,10 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
   `.SHO` yang sama dibuka (USB tetap hanya berisi file console). Atau simpan sebagai project
   `.mdshow` lewat *File → Export MiniDesk project*.
 
+> ℹ️ Daftar effect disusun dari effect umum console (nama yang dipakai di CODE MINI 1000T seperti
+> Pan saw, Tilt saw, Circle, Diamond, S, chase, step, strobe) karena manual resmi CODE MINI 1000T
+> tidak bisa diakses. Bila ada nama/bentuk di console Anda yang belum ada, kirim foto layar/manualnya.
+
 > ⚠️ Format `.SHO` dibaca dari file show asli (tidak ada dokumentasi resmi). Penulisan sudah diuji
 > (round-trip byte-identik, verifikasi CRC, import ulang), tetapi **belum diuji langsung di console**.
 > Uji dulu di console dengan salinan file, dan simpan backup show asli Anda.
@@ -80,12 +86,19 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
 - **Presets** (tab 🎨): simpan programmer sebagai preset *Color / Position / Beam / Intensity / All*,
   klik untuk memakai ke fixture terpilih (fixture tipe sama ikut mendapat nilai), klik kanan untuk
   rename / update / kategori / hapus. Preset dari console ikut terbaca.
-- **Effects** (Programmer → *Effects ✦*):
-  - Position: circle, figure 8, pan wave, tilt wave, ballyhoo
-  - Intensity: dimmer sine, pulse/ramp, chase, random, strobe
-  - Color: rainbow, color chase (2 warna)
-  - Parameter: speed (Hz/BPM), size, low/high, phase spread, phase offset, wings (mirror),
-    duty, fade-in effect, reverse. Effect bisa disimpan ke cue dan ikut fader playback.
+- **Effects** (tab **✦ Effects**, 41 effect seperti effect engine console):
+  - **Position**: Circle, Ellipse, Diamond, Square, Triangle, Figure 8, S shape, Cross, Star, Spiral,
+    **Pan saw, Tilt saw**, Pan/Tilt sine, Pan/Tilt swing, Pan/Tilt step, Ballyhoo, Random position
+  - **Intensity**: Sine, Saw ↑, Ramp ↓, Triangle, **Chase/step**, Soft chase, Random, Sparkle,
+    **Strobe**, Random strobe
+  - **Colour**: Rainbow, Chase A/B, Fade A↔B, RGB step, Random colour
+  - **Beam**: Gobo step, Zoom / Focus / Iris / Frost wave, Prism on/off
+  - Parameter: speed (Hz **dan BPM**), size, low/high, spread, offset, wings, duty, fade-in, reverse.
+    Klik bentuk → *Start on selection* (double-click = langsung start) → *Store…* ke cue.
+- **Programmer → Intensity**: fader dimmer, strobe Open/Slow/Medium/Fast/Closed, shortcut effect
+  Chase/Step/Sine/Saw/Strobe/Sparkle. **Position**: fader Pan & Tilt (posisi awal), Home, shortcut
+  Circle/Pan saw/Tilt saw/Diamond/S/Figure 8.
+- **Patch → Moving head**: *Invert pan*, *Invert tilt*, *Swap pan/tilt* per fixture.
 - **Timing cue**: delay in, fade in, delay out, fade out (untuk intensitas turun), hold, **follow**
   (cue berikutnya jalan otomatis).
 - **Playback lengkap** (tab 🎞 Cues): mode chase / cue list, arah **forward / backward / bounce /

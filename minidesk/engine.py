@@ -441,6 +441,8 @@ class Engine:
                     apply_effect(eff, ft, fx.fid, vals, t, 1.0, t - self._eff_start.get(id(eff), 0.0))
                 if self.highlight and fx.fid in self.selection:
                     self._apply_highlight(ft, vals)
+                if fx.invert_pan or fx.invert_tilt or fx.swap_pan_tilt:
+                    self._pt_options(fx, ft, vals)
                 if gm < 1.0:
                     dims = [i for i, c in enumerate(ft.channels) if c.attr in HTP_ATTRS]
                     scale = dims or [i for i, c in enumerate(ft.channels) if c.attr in COLOUR_ATTRS]
@@ -452,6 +454,19 @@ class Engine:
                     if 0 <= a < 512:
                         uni[a] = v
             return self.universes
+
+    @staticmethod
+    def _pt_options(fx: Fixture, ft: FixtureType, vals: list[int]) -> None:
+        idx = {c.attr: i for i, c in enumerate(ft.channels)}
+        if fx.swap_pan_tilt:
+            for a, b in (("pan", "tilt"), ("pan_fine", "tilt_fine")):
+                if a in idx and b in idx:
+                    vals[idx[a]], vals[idx[b]] = vals[idx[b]], vals[idx[a]]
+        for flag, names in ((fx.invert_pan, ("pan", "pan_fine")), (fx.invert_tilt, ("tilt", "tilt_fine"))):
+            if flag:
+                for n in names:
+                    if n in idx:
+                        vals[idx[n]] = 255 - vals[idx[n]]
 
     @staticmethod
     def _apply_highlight(ft: FixtureType, vals: list[int]) -> None:

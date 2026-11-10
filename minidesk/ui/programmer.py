@@ -184,6 +184,103 @@ class BeamQuick(QGroupBox):
         self.applied.emit()
 
 
+def _apply_function(engine: Engine, attrs: tuple, word: str, pos: float = 0.5) -> None:
+    """Set channels of ``attrs`` on the selection to the DMX range whose label contains ``word``
+    (``pos`` = where inside the range, 0..1)."""
+    show = engine.show
+    for fid in engine.selection:
+        fx = show.fixture(fid)
+        if not fx:
+            continue
+        ft = show.types[fx.type_key]
+        for ch in ft.channels:
+            if ch.attr not in attrs:
+                continue
+            for lo, hi, lab in ch.functions(ft.is_moving):
+                if word in lab.lower():
+                    engine.set_attr(ch.name, int(lo + (hi - lo) * pos), [fid], by_name=True)
+                    break
+
+
+class IntensityQuick(QGroupBox):
+    """Dimmer fader, strobe and intensity effect shortcuts (like the console's intensity page)."""
+    applied = Signal()
+
+    def __init__(self, engine: Engine, fx_panel, parent=None):
+        super().__init__("Intensity", parent)
+        self.engine, self.fx = engine, fx_panel
+        g = QGridLayout(self)
+        g.addWidget(QLabel("Dimmer"), 0, 0)
+        self.dim = QSlider(Qt.Horizontal)
+        self.dim.setRange(0, 100)
+        self.dim_lbl = QLabel("0 %")
+        self.dim_lbl.setMinimumWidth(44)
+        self.dim.valueChanged.connect(self._dim)
+        g.addWidget(self.dim, 0, 1, 1, 5)
+        g.addWidget(self.dim_lbl, 0, 6)
+        g.addWidget(QLabel("Strobe"), 1, 0)
+        for c, (txt, word, pos) in enumerate((("Open", "open", 0.5), ("Slow", "strobe", 0.1),
+                                              ("Medium", "strobe", 0.5), ("Fast", "strobe", 0.95),
+                                              ("Closed", "closed", 0.5))):
+            b = QPushButton(txt)
+            b.clicked.connect(lambda _=False, w=word, p=pos: self._strobe(w, p))
+            g.addWidget(b, 1, c + 1)
+        g.addWidget(QLabel("Effect"), 2, 0)
+        for c, (txt, key) in enumerate((("Chase", "dim_chase"), ("Step", "dim_random"), ("Sine", "dim_sine"),
+                                        ("Saw", "dim_saw"), ("Strobe", "strobe"), ("Sparkle", "sparkle"))):
+            b = QPushButton(txt)
+            b.setToolTip("Start this intensity effect on the selection (edit it in the Effects tab)")
+            b.clicked.connect(lambda _=False, k=key: (self.fx.choose(k), self.fx.start(), self.applied.emit()))
+            g.addWidget(b, 2, c + 1)
+
+    def _dim(self, v):
+        self.dim_lbl.setText(f"{v} %")
+        self.engine.set_intensity(v)
+        self.applied.emit()
+
+    def _strobe(self, word, pos):
+        if word == "open":       # open: shutter 'Open' on moving heads, 'no strobe' on PARs
+            _apply_function(self.engine, ("shutter",), "open", 0.5)
+            _apply_function(self.engine, ("strobe",), "no strobe", 0.5)
+        elif word == "closed":
+            _apply_function(self.engine, ("shutter",), "closed", 0.5)
+        else:
+            _apply_function(self.engine, ("shutter", "strobe"), word, pos)
+        self.applied.emit()
+
+
+class PositionQuick(QGroupBox):
+    """Pan / tilt faders (start position), home and position effect shortcuts."""
+    applied = Signal()
+
+    def __init__(self, engine: Engine, fx_panel, parent=None):
+        super().__init__("Position (moving heads)", parent)
+        self.engine, self.fx = engine, fx_panel
+        g = QGridLayout(self)
+        self.sl = {}
+        for r, attr in enumerate(("pan", "tilt")):
+            g.addWidget(QLabel(attr.capitalize()), r, 0)
+            s = QSlider(Qt.Horizontal)
+            s.setRange(0, 255)
+            s.setValue(128)
+            lbl = QLabel("128")
+            lbl.setMinimumWidth(34)
+            s.valueChanged.connect(lambda v, a=attr, l=lbl: (l.setText(str(v)), self.engine.set_attr(a, v),
+                                                             self.applied.emit()))
+            g.addWidget(s, r, 1, 1, 5)
+            g.addWidget(lbl, r, 6)
+            self.sl[attr] = s
+        b_home = QPushButton("Home / centre")
+        b_home.clicked.connect(lambda: [s.setValue(128) for s in self.sl.values()])
+        g.addWidget(b_home, 2, 1, 1, 2)
+        g.addWidget(QLabel("Effect"), 3, 0)
+        for c, (txt, key) in enumerate((("Circle", "circle"), ("Pan saw", "pan_saw"), ("Tilt saw", "tilt_saw"),
+                                        ("Diamond", "diamond"), ("S", "s_shape"), ("Figure 8", "figure8"))):
+            b = QPushButton(txt)
+            b.clicked.connect(lambda _=False, k=key: (self.fx.choose(k), self.fx.start(), self.applied.emit()))
+            g.addWidget(b, 3, c + 1)
+
+
 class ProgrammerPanel(QWidget):
     storeRequested = Signal()
     programmerChanged = Signal()
@@ -252,12 +349,14 @@ class ProgrammerPanel(QWidget):
         self.beam_quick = BeamQuick(engine)
         self.beam_quick.applied.connect(lambda: (self.refresh(), self.programmerChanged.emit()))
         self.pages["Beam"].insertWidget(0, self.beam_quick)
-        self.fx = EffectsPanel(engine)
+        self.fx = EffectsPanel(engine)            # shown as its own main tab
         self.fx.changed.connect(self.programmerChanged.emit)
-        fx_scroll = QScrollArea()
-        fx_scroll.setWidgetResizable(True)
-        fx_scroll.setWidget(self.fx)
-        self.tabs.addTab(fx_scroll, "Effects ✦")
+        self.int_quick = IntensityQuick(engine, self.fx)
+        self.int_quick.applied.connect(lambda: (self.refresh(), self.programmerChanged.emit()))
+        self.pages["Intensity"].insertWidget(0, self.int_quick)
+        self.pos_quick = PositionQuick(engine, self.fx)
+        self.pos_quick.applied.connect(lambda: (self.refresh(), self.programmerChanged.emit()))
+        self.pages["Position"].insertWidget(0, self.pos_quick)
         lay.addWidget(self.tabs, 1)
 
         bl = QHBoxLayout()
@@ -281,8 +380,9 @@ class ProgrammerPanel(QWidget):
         self.rows.clear()
         sel = self.engine.selection
         show = self.engine.show
-        self.beam_quick.setVisible(any(show.fixture(f) and show.types[show.fixture(f).type_key].is_moving
-                                       for f in sel))
+        moving = any(show.fixture(f) and show.types[show.fixture(f).type_key].is_moving for f in sel)
+        self.beam_quick.setVisible(moving)
+        self.pos_quick.setVisible(moving)
         if not sel:
             self.info.setText("No fixtures selected  –  select fixtures or a group")
             return
@@ -307,6 +407,7 @@ class ProgrammerPanel(QWidget):
                 page.insertWidget(page.count() - 1, row)
                 self.rows[ch.name] = row
         self.pad.set_pos(self._attr_value("pan"), self._attr_value("tilt"))
+        self._sync_quick()
 
     def _current(self, name: str) -> tuple[int, bool]:
         show = self.engine.show
@@ -339,6 +440,19 @@ class ProgrammerPanel(QWidget):
             v, active = self._current(name)
             row.set_value(v, active)
         self.pad.set_pos(self._attr_value("pan"), self._attr_value("tilt"))
+        self._sync_quick()
+
+    def _sync_quick(self) -> None:
+        dim = self._attr_value("dimmer") if self.engine.selection else 0
+        for w, v in ((self.int_quick.dim, round(dim / 2.55)),):
+            w.blockSignals(True)
+            w.setValue(v)
+            w.blockSignals(False)
+        self.int_quick.dim_lbl.setText(f"{round(dim / 2.55)} %")
+        for a, sl in self.pos_quick.sl.items():
+            sl.blockSignals(True)
+            sl.setValue(self._attr_value(a))
+            sl.blockSignals(False)
 
     # --------------------------------------------------------------- actions
     def _changed(self, name: str, v: int) -> None:

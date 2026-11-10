@@ -46,6 +46,8 @@ def save(show: Show) -> str:
         "truss_model": show.truss_model,
         "positions": {str(f.slot if f.slot >= 0 else -f.fid): [f.x, f.y, f.z, f.mount, f.rot, f.aim]
                       for f in show.fixtures},
+        "pt_options": {str(f.slot if f.slot >= 0 else -f.fid): [f.invert_pan, f.invert_tilt, f.swap_pan_tilt]
+                       for f in show.fixtures if f.invert_pan or f.invert_tilt or f.swap_pan_tilt},
         "types": {k: {"kind": t.kind, "beam_angle": t.beam_angle, "pan_range": t.pan_range,
                       "tilt_range": t.tilt_range, "model": t.model, "model_scale": t.model_scale,
                       "channels": [[c.attr, c.default, c.ranges] for c in t.channels]}
@@ -95,6 +97,9 @@ def load(show: Show) -> bool:
         v = pos.get(str(f.slot if f.slot >= 0 else -f.fid))
         if v:
             f.x, f.y, f.z, f.mount, f.rot, f.aim = v
+        o = data.get("pt_options", {}).get(str(f.slot if f.slot >= 0 else -f.fid))
+        if o:
+            f.invert_pan, f.invert_tilt, f.swap_pan_tilt = o
     for k, t in data.get("types", {}).items():
         ft = show.types.get(k)
         if not ft:

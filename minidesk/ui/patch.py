@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButtonBox,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QSplitter,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
@@ -439,6 +439,13 @@ class PatchPanel(QWidget):
         f.addRow("Universe", self.e_uni)
         f.addRow("Address", self.e_addr)
         f.addRow("", self.l_end)
+        self.e_ip = QCheckBox("Invert pan")
+        self.e_it = QCheckBox("Invert tilt")
+        self.e_sw = QCheckBox("Swap pan / tilt")
+        ptr = QHBoxLayout()
+        for w in (self.e_ip, self.e_it, self.e_sw):
+            ptr.addWidget(w)
+        f.addRow("Moving head", ptr)
         r = QHBoxLayout()
         r.addWidget(b_free)
         r.addWidget(b_unpatch)
@@ -516,6 +523,10 @@ class PatchPanel(QWidget):
         self.e_uni.setRange(1, 4 if is_console_show(self.engine.show) else 64)
         self.e_uni.setValue(fx.universe + 1)
         self.e_addr.setValue(fx.address)
+        mv = self.engine.show.ftype(fx).is_moving
+        for w, v in ((self.e_ip, fx.invert_pan), (self.e_it, fx.invert_tilt), (self.e_sw, fx.swap_pan_tilt)):
+            w.setChecked(v)
+            w.setEnabled(mv)
         rows = sorted({i.row() for i in self.table.selectedIndexes()})
         fids = [self.engine.show.fixtures[r].fid for r in rows]
         if fids:
@@ -549,6 +560,8 @@ class PatchPanel(QWidget):
         old = (fx.name, fx.type_key, fx.universe, fx.address)
         fx.name = self.e_name.text().strip() or ft.name
         fx.type_key, fx.universe, fx.address = ft.key, self.e_uni.value() - 1, a
+        fx.invert_pan, fx.invert_tilt = self.e_ip.isChecked(), self.e_it.isChecked()
+        fx.swap_pan_tilt = self.e_sw.isChecked()
         conf = [c for c in show.patch_conflicts() if fx.fid in c]
         if conf:
             fx.name, fx.type_key, fx.universe, fx.address = old

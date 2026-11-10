@@ -1,69 +1,200 @@
-"""Effect generator panel (position / intensity / colour effects)."""
+"""Effect engine panel: shape library (position / intensity / colour / beam) + parameters."""
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QFormLayout,
-                               QGroupBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-                               QPushButton, QSpinBox, QVBoxLayout, QWidget)
+import colorsys
+import math
 
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtWidgets import (QCheckBox, QColorDialog, QDoubleSpinBox, QFormLayout, QGridLayout,
+                               QGroupBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+                               QPushButton, QScrollArea, QSizePolicy, QSpinBox, QTabWidget,
+                               QToolButton, QVBoxLayout, QWidget)
+
+from ..effects import intensity_value, shape_xy
 from ..engine import Engine
 from ..model import EFFECT_TYPES, Effect
 
 PRESETS = {
-    "circle": dict(speed=0.5, size=40, spread=360),
-    "figure8": dict(speed=0.4, size=40, spread=180),
-    "pan_wave": dict(speed=0.5, size=50, spread=180),
-    "tilt_wave": dict(speed=0.5, size=40, spread=360),
-    "ballyhoo": dict(speed=0.3, size=60, spread=360),
-    "dim_sine": dict(speed=0.5, spread=360),
-    "dim_pulse": dict(speed=1.0, spread=360),
-    "dim_chase": dict(speed=1.0, spread=360, duty=0.5),
-    "dim_random": dict(speed=2.0, spread=0),
-    "strobe": dict(speed=8.0, spread=0, duty=0.5),
-    "rainbow": dict(speed=0.2, spread=360),
-    "color_chase": dict(speed=1.0, spread=360, duty=0.5),
+    "circle": dict(speed=0.5, size=40, spread=360), "ellipse": dict(speed=0.5, size=50, spread=360),
+    "diamond": dict(speed=0.4, size=40, spread=360), "square": dict(speed=0.35, size=40, spread=360),
+    "triangle": dict(speed=0.4, size=40, spread=360), "figure8": dict(speed=0.4, size=40, spread=180),
+    "s_shape": dict(speed=0.25, size=45, spread=180), "cross": dict(speed=0.3, size=45, spread=0),
+    "star": dict(speed=0.25, size=45, spread=360), "spiral": dict(speed=0.12, size=50, spread=360),
+    "pan_saw": dict(speed=0.5, size=50, spread=360), "tilt_saw": dict(speed=0.5, size=40, spread=360),
+    "pan_wave": dict(speed=0.5, size=50, spread=180), "tilt_wave": dict(speed=0.5, size=40, spread=360),
+    "pan_swing": dict(speed=0.4, size=50, spread=180), "tilt_swing": dict(speed=0.4, size=40, spread=180),
+    "pan_step": dict(speed=1.0, size=40, spread=180, duty=0.5), "tilt_step": dict(speed=1.0, size=40, spread=180),
+    "ballyhoo": dict(speed=0.3, size=60, spread=360), "pos_random": dict(speed=0.5, size=50, spread=360),
+    "dim_sine": dict(speed=0.5, spread=360), "dim_saw": dict(speed=1.0, spread=360),
+    "dim_pulse": dict(speed=1.0, spread=360), "dim_triangle": dict(speed=0.7, spread=360),
+    "dim_chase": dict(speed=1.0, spread=360, duty=0.5), "dim_fade": dict(speed=0.8, spread=360, duty=0.4),
+    "dim_random": dict(speed=2.0, spread=0), "sparkle": dict(speed=2.0, spread=0, duty=0.5),
+    "strobe": dict(speed=8.0, spread=0, duty=0.5), "strobe_random": dict(speed=8.0, spread=0, duty=0.5),
+    "rainbow": dict(speed=0.2, spread=360), "color_chase": dict(speed=1.0, spread=360, duty=0.5),
+    "color_fade": dict(speed=0.3, spread=360), "rgb_step": dict(speed=0.5, spread=360),
+    "color_random": dict(speed=1.0, spread=0),
+    "gobo_step": dict(speed=0.5, spread=0), "zoom_wave": dict(speed=0.3, spread=360),
+    "focus_wave": dict(speed=0.3, spread=360), "iris_wave": dict(speed=0.3, spread=360),
+    "prism_flash": dict(speed=0.5, spread=0, duty=0.5), "frost_wave": dict(speed=0.3, spread=360),
 }
+SHORT = {"dim_sine": "Sine", "dim_saw": "Saw ↑", "dim_pulse": "Ramp ↓", "dim_triangle": "Triangle",
+         "dim_chase": "Chase / step", "dim_fade": "Soft chase", "dim_random": "Random", "strobe_random": "Rnd strobe",
+         "pan_wave": "Pan sine", "tilt_wave": "Tilt sine", "pan_swing": "Pan swing", "tilt_swing": "Tilt swing",
+         "pos_random": "Random", "color_chase": "Chase A/B", "color_fade": "Fade A↔B", "rgb_step": "RGB step",
+         "color_random": "Random", "prism_flash": "Prism on/off"}
+CATS = [("Position", "🎯 Position"), ("Intensity", "💡 Intensity"), ("Color", "🎨 Colour"), ("Beam", "🔆 Beam")]
+
+
+def shape_icon(kind: str, feature: str, size: int = 46) -> QIcon:
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    m = 6
+    r = QRectF(m, m, size - 2 * m, size - 2 * m)
+    p.setPen(QPen(QColor(60, 64, 80), 1))
+    p.setBrush(QColor(22, 24, 32))
+    p.drawRoundedRect(QRectF(1, 1, size - 2, size - 2), 6, 6)
+    path = QPainterPath()
+    accent = QColor(255, 196, 64)
+    if feature == "Position":
+        for i in range(97):
+            x, y = shape_xy(kind, i / 96, 3, i / 96 * 3)
+            pt = QPointF(r.center().x() + x * r.width() / 2, r.center().y() - y * r.height() / 2)
+            path.moveTo(pt) if i == 0 else path.lineTo(pt)
+    elif feature == "Intensity":
+        for i in range(97):
+            v = intensity_value(kind, (i / 96 * 2) % 1.0, 0.5, 3, i / 96 * 2, 1)
+            pt = QPointF(r.left() + r.width() * i / 96, r.bottom() - v * r.height())
+            path.moveTo(pt) if i == 0 else path.lineTo(pt)
+    elif feature == "Color":
+        p.setPen(Qt.NoPen)
+        n = 12
+        for i in range(n):
+            if kind == "rainbow":
+                c = QColor(*[int(x * 255) for x in colorsys.hsv_to_rgb(i / n, 1, 1)])
+            elif kind == "rgb_step":
+                c = QColor(*[(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255)][i * 4 // n])
+            elif kind == "color_random":
+                c = QColor(*[(255, 0, 0), (0, 230, 255), (255, 230, 0), (160, 0, 255)][(i * 7) % 4])
+            elif kind == "color_fade":
+                k = i / (n - 1)
+                c = QColor(int(255 * (1 - k)), 0, int(255 * k))
+            else:
+                c = QColor(255, 0, 0) if i < n // 2 else QColor(0, 0, 255)
+            p.setBrush(c)
+            p.drawRect(QRectF(r.left() + r.width() * i / n, r.top() + r.height() * 0.25, r.width() / n + 0.5,
+                              r.height() * 0.5))
+        p.end()
+        return QIcon(pm)
+    else:
+        p.setPen(QPen(accent, 2))
+        c = r.center()
+        if kind == "gobo_step":
+            for k in range(5):
+                a = 2 * math.pi * k / 5
+                p.drawEllipse(QPointF(c.x() + math.cos(a) * 10, c.y() + math.sin(a) * 10), 3, 3)
+        elif kind == "prism_flash":
+            for k in range(3):
+                a = 2 * math.pi * k / 3
+                p.drawEllipse(QPointF(c.x() + math.cos(a) * 8, c.y() + math.sin(a) * 8), 6, 6)
+        else:
+            for k, rad in enumerate((6, 11, 16)):
+                p.setPen(QPen(QColor(255, 196, 64, 255 - k * 70), 2))
+                p.drawEllipse(c, rad, rad)
+        p.end()
+        return QIcon(pm)
+    p.setPen(QPen(accent, 2))
+    p.setBrush(Qt.NoBrush)
+    p.drawPath(path)
+    p.end()
+    return QIcon(pm)
 
 
 class EffectsPanel(QWidget):
     changed = Signal()
+    storeRequested = Signal()
 
     def __init__(self, engine: Engine, parent=None):
         super().__init__(parent)
         self.engine = engine
         self.col_a, self.col_b = (255, 0, 0), (0, 0, 255)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(4, 4, 4, 4)
-        hint = QLabel("Select fixtures, choose an effect, press <b>Start</b>. Running effects are part of the "
-                      "programmer – press <b>Store…</b> to save them into a cue.")
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
+        self.kind = "circle"
+        self.buttons: dict[str, QToolButton] = {}
+        root = QHBoxLayout(self)
+        root.setContentsMargins(6, 6, 6, 6)
 
-        g = QGroupBox("Effect")
+        # --- left: library -------------------------------------------------
+        left = QVBoxLayout()
+        hint = QLabel("1. Select fixtures   2. Click a shape   3. Adjust the parameters   "
+                      "4. <b>Store…</b> to put it into a cue")
+        hint.setWordWrap(True)
+        left.addWidget(hint)
+        self.cat_tabs = QTabWidget()
+        for feat, label in CATS:
+            w = QWidget()
+            g = QGridLayout(w)
+            g.setSpacing(6)
+            g.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            keys = [k for k, (_, f) in EFFECT_TYPES.items() if f == feat]
+            for i, k in enumerate(keys):
+                b = QToolButton()
+                b.setText(SHORT.get(k, EFFECT_TYPES[k][0]))
+                b.setIcon(shape_icon(k, feat))
+                b.setIconSize(QSize(46, 46))
+                b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+                b.setCheckable(True)
+                b.setFixedSize(100, 80)
+                b.setToolTip(f"{EFFECT_TYPES[k][0]} – click to choose, double-click to start on the selection")
+                b.clicked.connect(lambda _=False, key=k: self.choose(key))
+                b.mouseDoubleClickEvent = lambda e, key=k: (self.choose(key), self.start())
+                g.addWidget(b, i // 5, i % 5)
+                self.buttons[k] = b
+            sc = QScrollArea()
+            sc.setWidgetResizable(True)
+            sc.setWidget(w)
+            self.cat_tabs.addTab(sc, label)
+        left.addWidget(self.cat_tabs, 1)
+        bl = QHBoxLayout()
+        b_start = QPushButton("▶  Start on selection")
+        b_start.setObjectName("go")
+        b_start.clicked.connect(self.start)
+        b_store = QPushButton("💾  Store…")
+        b_store.clicked.connect(self.storeRequested.emit)
+        bl.addWidget(b_start, 2)
+        bl.addWidget(b_store, 1)
+        left.addLayout(bl)
+        lw = QWidget()
+        lw.setLayout(left)
+        root.addWidget(lw, 3)
+
+        # --- right: parameters + running effects ---------------------------
+        right = QVBoxLayout()
+        self.title = QLabel("Circle")
+        self.title.setObjectName("title")
+        right.addWidget(self.title)
+        g = QGroupBox("Parameters")
         f = QFormLayout(g)
-        self.type = QComboBox()
-        for feat in ("Position", "Intensity", "Color"):
-            for k, (label, ft) in EFFECT_TYPES.items():
-                if ft == feat:
-                    self.type.addItem(f"{feat}: {label}", k)
-        self.type.currentIndexChanged.connect(self._preset)
-        f.addRow("Type", self.type)
+        f.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.speed = QDoubleSpinBox()
         self.speed.setRange(0.01, 30)
         self.speed.setDecimals(2)
         self.speed.setSuffix(" Hz")
-        self.speed.setToolTip("Cycles per second (BPM = Hz × 60)")
-        self.bpm = QLabel()
-        self.speed.valueChanged.connect(lambda v: self.bpm.setText(f"= {v * 60:.0f} BPM"))
+        self.bpm = QSpinBox()
+        self.bpm.setRange(1, 1800)
+        self.bpm.setSuffix(" BPM")
+        self.speed.valueChanged.connect(lambda v: (self.bpm.blockSignals(True), self.bpm.setValue(round(v * 60)),
+                                                   self.bpm.blockSignals(False)))
+        self.bpm.valueChanged.connect(lambda v: self.speed.setValue(v / 60))
         r = QHBoxLayout()
         r.addWidget(self.speed)
         r.addWidget(self.bpm)
         f.addRow("Speed", r)
         self.size = QSpinBox()
         self.size.setRange(1, 127)
-        self.size.setToolTip("Position effects: amplitude in DMX steps around the current pan/tilt")
-        f.addRow("Size (position)", self.size)
+        self.size.setToolTip("Position: amplitude in DMX steps around the current pan / tilt")
+        f.addRow("Size", self.size)
         lr = QHBoxLayout()
         self.low = QSpinBox()
         self.low.setRange(0, 255)
@@ -74,30 +205,30 @@ class EffectsPanel(QWidget):
         lr.addWidget(self.low)
         lr.addWidget(QLabel("High"))
         lr.addWidget(self.high)
-        f.addRow("Intensity range", lr)
+        f.addRow("Range", lr)
         self.spread = QSpinBox()
         self.spread.setRange(0, 1440)
         self.spread.setSuffix(" °")
-        self.spread.setToolTip("Phase spread across the fixtures: 0 = all together, 360 = one full wave")
-        f.addRow("Phase spread", self.spread)
+        self.spread.setToolTip("Phase spread over the fixtures: 0 = all together, 360 = one full wave")
+        f.addRow("Spread", self.spread)
         self.offset = QSpinBox()
         self.offset.setRange(0, 359)
         self.offset.setSuffix(" °")
-        f.addRow("Phase offset", self.offset)
+        f.addRow("Offset", self.offset)
         self.wings = QSpinBox()
         self.wings.setRange(1, 8)
-        self.wings.setToolTip("Split the selection into mirrored parts (2 = symmetric from the centre)")
+        self.wings.setToolTip("Mirror groups (2 = symmetric from the centre)")
         f.addRow("Wings", self.wings)
         self.duty = QDoubleSpinBox()
         self.duty.setRange(0.05, 0.95)
         self.duty.setSingleStep(0.05)
         self.duty.setValue(0.5)
-        f.addRow("Duty (chase/strobe)", self.duty)
+        self.duty.setToolTip("On-time for step / chase / strobe shapes")
+        f.addRow("Duty", self.duty)
         self.fade = QDoubleSpinBox()
         self.fade.setRange(0, 60)
         self.fade.setSuffix(" s")
-        self.fade.setToolTip("Time to fade the effect in when it starts / when the cue is played")
-        f.addRow("Effect fade-in", self.fade)
+        f.addRow("Fade in", self.fade)
         self.reverse = QCheckBox("Reverse direction")
         f.addRow("", self.reverse)
         cr = QHBoxLayout()
@@ -106,34 +237,34 @@ class EffectsPanel(QWidget):
         self.b_b.clicked.connect(lambda: self._pick("b"))
         cr.addWidget(self.b_a)
         cr.addWidget(self.b_b)
-        f.addRow("Colour chase", cr)
-        lay.addWidget(g)
-
+        f.addRow("Colours", cr)
+        right.addWidget(g)
         br = QHBoxLayout()
-        b_start = QPushButton("▶ Start on selection")
-        b_start.setObjectName("go")
-        b_start.clicked.connect(self.start)
-        b_upd = QPushButton("Apply to selected effect")
-        b_upd.clicked.connect(self.update_selected)
-        b_stop = QPushButton("Stop selected")
-        b_stop.clicked.connect(self.stop_selected)
-        b_all = QPushButton("Stop all")
-        b_all.setObjectName("danger")
-        b_all.clicked.connect(self.stop_all)
-        for b in (b_start, b_upd, b_stop, b_all):
+        for txt, fn, obj in (("Apply to running", self.update_selected, ""), ("Stop", self.stop_selected, ""),
+                             ("Stop all", self.stop_all, "danger")):
+            b = QPushButton(txt)
+            if obj:
+                b.setObjectName(obj)
+            b.clicked.connect(fn)
             br.addWidget(b)
-        lay.addLayout(br)
-        lay.addWidget(QLabel("Running programmer effects"))
+        right.addLayout(br)
+        right.addWidget(QLabel("Running effects (programmer)"))
         self.list = QListWidget()
+        self.list.setMinimumHeight(90)
         self.list.currentRowChanged.connect(self._load_selected)
-        lay.addWidget(self.list, 1)
+        right.addWidget(self.list, 1)
+        rw = QWidget()
+        rw.setLayout(right)
+        rw.setMinimumWidth(300)
+        rw.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        root.addWidget(rw, 2)
         self._colours()
-        self._preset()
+        self.choose("circle")
 
     # ------------------------------------------------------------------ ui
     def _colours(self):
-        self.b_a.setStyleSheet(f"background: rgb{self.col_a};")
-        self.b_b.setStyleSheet(f"background: rgb{self.col_b};")
+        self.b_a.setStyleSheet(f"background: rgb{tuple(self.col_a)};")
+        self.b_b.setStyleSheet(f"background: rgb{tuple(self.col_b)};")
 
     def _pick(self, which):
         cur = self.col_a if which == "a" else self.col_b
@@ -146,39 +277,50 @@ class EffectsPanel(QWidget):
                 self.col_b = rgb
             self._colours()
 
-    def _preset(self, *_):
-        k = self.type.currentData()
-        pr = PRESETS.get(k, {})
+    def choose(self, kind: str) -> None:
+        self.kind = kind
+        for k, b in self.buttons.items():
+            b.setChecked(k == kind)
+        label, feat = EFFECT_TYPES[kind]
+        self.title.setText(f"{label}   ·   {feat}")
+        pr = PRESETS.get(kind, {})
         self.speed.setValue(pr.get("speed", 0.5))
         self.size.setValue(pr.get("size", 40))
         self.spread.setValue(pr.get("spread", 360))
         self.duty.setValue(pr.get("duty", 0.5))
+        if feat == "Beam" and kind != "gobo_step" and kind != "prism_flash":
+            self.low.setValue(0)
+            self.high.setValue(255)
+        self.size.setEnabled(feat == "Position")
+        self.low.setEnabled(feat in ("Intensity", "Beam"))
+        self.high.setEnabled(feat in ("Intensity", "Beam"))
+        self.b_a.setEnabled(feat == "Color")
+        self.b_b.setEnabled(feat == "Color")
 
     def _make(self, fixtures) -> Effect:
-        return Effect(type=self.type.currentData(), fixtures=list(fixtures), speed=self.speed.value(),
-                      size=self.size.value(), spread=self.spread.value(), wings=self.wings.value(),
-                      low=self.low.value(), high=self.high.value(), color_a=self.col_a,
-                      color_b=self.col_b, reverse=self.reverse.isChecked(), offset=self.offset.value(),
-                      duty=self.duty.value(), fade=self.fade.value())
+        return Effect(type=self.kind, fixtures=list(fixtures), speed=self.speed.value(), size=self.size.value(),
+                      spread=self.spread.value(), wings=self.wings.value(), low=self.low.value(),
+                      high=self.high.value(), color_a=self.col_a, color_b=self.col_b,
+                      reverse=self.reverse.isChecked(), offset=self.offset.value(), duty=self.duty.value(),
+                      fade=self.fade.value())
 
     def refresh(self):
         self.list.blockSignals(True)
         self.list.clear()
         for e in self.engine.effects:
             label = EFFECT_TYPES.get(e.type, (e.type, ""))[0]
-            it = QListWidgetItem(f"{label}  –  {len(e.fixtures)} fixtures  {e.speed:g} Hz  "
-                                 f"spread {e.spread:g}°  wings {e.wings}")
-            self.list.addItem(it)
+            self.list.addItem(QListWidgetItem(f"{label}  ·  {len(e.fixtures)} fx  ·  {e.speed * 60:.0f} BPM  ·  "
+                                              f"spread {e.spread:g}°  ·  wings {e.wings}"))
         self.list.blockSignals(False)
 
     def _load_selected(self, row):
         if not (0 <= row < len(self.engine.effects)):
             return
         e = self.engine.effects[row]
-        i = self.type.findData(e.type)
-        self.type.blockSignals(True)
-        self.type.setCurrentIndex(i)
-        self.type.blockSignals(False)
+        if e.type in self.buttons:
+            self.choose(e.type)
+            feat = EFFECT_TYPES[e.type][1]
+            self.cat_tabs.setCurrentIndex([c for c, _ in CATS].index(feat))
         self.speed.setValue(e.speed)
         self.size.setValue(int(e.size))
         self.spread.setValue(int(e.spread))
@@ -195,10 +337,11 @@ class EffectsPanel(QWidget):
     # ------------------------------------------------------------- actions
     def start(self):
         if not self.engine.selection:
-            self.list.addItem("⚠ select fixtures first")
+            self.title.setText("⚠ Select fixtures first (Fixtures / Groups tab or click in the stage)")
             return
         self.engine.add_effect(self._make(self.engine.selection))
         self.refresh()
+        self.list.setCurrentRow(self.list.count() - 1)
         self.changed.emit()
 
     def update_selected(self):

@@ -487,3 +487,38 @@ def test_user_models_fbx_and_truss():
     assert [round(s["length"], 2) for s in t["segments"]] == [3.05, 2.44, 1.83, 1.52, 0.91]
     tiles = truss_model.tile(6.1, t["segments"])
     assert len(tiles) == 2
+
+
+def test_every_effect_runs_on_every_fixture_kind():
+    from minidesk.model import EFFECT_TYPES, Effect
+    s = small_show()
+    e = Engine(s)
+    for key in EFFECT_TYPES:
+        e.clear_programmer()
+        e.select([1, 2, 3])
+        e.set_intensity(100)
+        e.add_effect(Effect(type=key, fixtures=[1, 2, 3], speed=1.0))
+        frames = {bytes(e.tick(0.07)[0][:40]) for _ in range(12)}
+        assert len(frames) > 1 or key == "iris_wave", f"{key} does not change the output"   # no iris channel in the test fixtures
+
+
+def test_position_shapes_follow_path():
+    from minidesk.effects import shape_xy
+    assert shape_xy("diamond", 0.0)[1] == 1 and abs(shape_xy("diamond", 0.25)[0] - 1) < 1e-9
+    assert shape_xy("pan_saw", 0.0) == (-1.0, 0.0) and shape_xy("tilt_saw", 0.5)[1] == 0.0
+    xs = [shape_xy("s_shape", i / 20)[0] for i in range(20)]
+    assert max(xs) > 0.5 and min(xs) < -0.5             # S swings to both sides
+
+
+def test_pan_tilt_invert_swap():
+    s = small_show()
+    e = Engine(s)
+    spot = s.fixture(3)
+    e.select([3])
+    e.set_attr("pan", 10)
+    e.set_attr("tilt", 200)
+    u = e.tick(0.0)[0]
+    assert (u[16], u[18]) == (10, 200)
+    spot.invert_pan, spot.swap_pan_tilt = True, True
+    u = e.tick(0.0)[0]
+    assert (u[16], u[18]) == (255 - 200, 10)

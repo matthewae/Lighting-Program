@@ -46,9 +46,11 @@ ke posisinya. Pilih banyak fixture (Ctrl+klik / tarik kotak) lalu pakai tombol a
 memilih model 3D (beam, hybrid, spot, wash, PAR, fresnel, strobe, LED bar, blinder, hazer, fog) atau
 <b>import model sendiri</b> (OBJ, GLB/glTF, STL) – lengkap dengan preview yang berputar.</li>
 <li><b>Fixtures / Groups</b>: klik group/fixture untuk memilih. Klik kanan group: rename / update / delete.</li>
-<li><b>Programmer</b>: atur intensity, color, position, beam. Tab <b>Effects ✦</b> untuk effect
-(circle, figure 8, wave, dimmer chase/sine/random, strobe, rainbow, color chase) dengan speed, size,
-spread, wings, duty dan fade-in.</li>
+<li><b>Programmer</b>: halaman Intensity (dimmer, strobe), Position (pan, tilt, home), Color, Beam, Other.</li>
+<li><b>✦ Effects</b>: 41 effect – Position (circle, diamond, square, triangle, figure 8, S, cross, star, spiral,
+pan saw, tilt saw, sine, swing, step, ballyhoo, random), Intensity (sine, saw, ramp, chase/step, soft chase,
+random, sparkle, strobe), Colour (rainbow, chase, fade, RGB step, random), Beam (gobo step, zoom/focus/iris/
+frost wave, prism). Parameter: speed/BPM, size, low/high, spread, offset, wings, duty, fade-in.</li>
 <li><b>Store…</b> menyimpan programmer (nilai + effect) sebagai cue di sebuah playback.
 Timing per cue (delay in, fade in, delay out, fade out, hold) diatur di tab <b>Cues</b>.</li>
 <li><b>Programmer → Beam</b>: tombol cepat gobo (open, 1–8, shake), gobo rotation, prism (on / macro /
@@ -246,7 +248,7 @@ class MainWindow(QMainWindow):
         action(m, "Exit", self.close, "Ctrl+Q")
         m = mb.addMenu("&Edit")
         action(m, "Store programmer as cue…", self.store_dialog, "Ctrl+Return")
-        action(m, "Store programmer as preset…", lambda: (self.tabs.setCurrentWidget(self.presets),
+        action(m, "Store programmer as preset…", lambda: (self.show_tab(self.presets),
                                                            self.presets.store()), "Ctrl+P")
         action(m, "Clear programmer", lambda: self.prog.clear())
         m.addSeparator()
@@ -310,7 +312,8 @@ class MainWindow(QMainWindow):
         self.banner = QLabel()
         self.banner.setWordWrap(True)
         self.banner.setTextFormat(Qt.RichText)
-        self.banner.setStyleSheet("padding:6px 10px; background:#1b2333; border-bottom:1px solid #2a3550;")
+        self.banner.setStyleSheet("padding:7px 12px; background:#171b26; border-bottom:1px solid #262c3d; "
+                                  "border-radius:0px;")
 
         self.view = StageView(self.engine.show, self.vis_dmx)
         self.view.fixtureClicked.connect(self._vis_click)
@@ -336,26 +339,43 @@ class MainWindow(QMainWindow):
         self.monitor = DmxMonitor({"program output": self.prog_dmx, "console input": self.input_dmx,
                                    "stage view": self.vis_dmx}, lambda: self.engine.show)
 
+        self.fx = self.prog.fx
+        self.fx.storeRequested.connect(self.store_dialog)
+        self.fx.changed.connect(self.sheet.grid.update)
         self.tabs = QTabWidget()
-        self.tabs.addTab(self.sheet, "🎛 Fixtures / Groups")
-        self.tabs.addTab(self.prog, "🎚 Programmer")
-        self.tabs.addTab(self.presets, "🎨 Presets")
-        self.tabs.addTab(self.cues, "🎞 Cues")
-        self.tabs.addTab(self.stage, "📐 Stage Layout")
-        self.tabs.addTab(self.patch, "🔌 Patch")
-        self.tabs.addTab(self.monitor, "📊 DMX")
+        self.tabs.setDocumentMode(True)
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setElideMode(Qt.ElideNone)
+        self._tab_pages = {}
+        for w, label in ((self.sheet, "🎛 Fixtures"), (self.prog, "🎚 Programmer"), (self.fx, "✦ Effects"),
+                         (self.presets, "🎨 Presets"), (self.cues, "🎞 Cues"), (self.stage, "📐 Stage"),
+                         (self.patch, "🔌 Patch"), (self.monitor, "📊 DMX")):
+            self.tabs.addTab(self._scroll(w), label)
+            self._tab_pages[w] = self.tabs.count() - 1
 
         top = QSplitter(Qt.Horizontal)
+        top.setChildrenCollapsible(False)
         top.addWidget(self.view)
         top.addWidget(self.tabs)
+        top.setStretchFactor(0, 5)
+        top.setStretchFactor(1, 4)
         top.setSizes([900, 760])
         self.execs = ExecutorBar(self.engine)
         self.execs.playbackSelected.connect(self._edit_playback)
         self.execs.playbackTriggered.connect(self._feedback)
         vs = QSplitter(Qt.Vertical)
+        vs.setChildrenCollapsible(False)
         vs.addWidget(top)
-        vs.addWidget(self.execs)
-        vs.setSizes([650, 330])
+        from PySide6.QtWidgets import QFrame, QScrollArea
+        ex_sc = QScrollArea()
+        ex_sc.setWidgetResizable(True)
+        ex_sc.setFrameShape(QFrame.NoFrame)
+        ex_sc.setWidget(self.execs)
+        ex_sc.setMinimumHeight(150)
+        vs.addWidget(ex_sc)
+        vs.setStretchFactor(0, 3)
+        vs.setStretchFactor(1, 1)
+        vs.setSizes([680, 280])
 
         self.cmdline = QLineEdit()
         self.cmdline.setObjectName("cmd")
@@ -385,6 +405,20 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Escape"), self, activated=self.cmdline.clear)
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self._go_current)
         self._update_banner()
+
+    @staticmethod
+    def _scroll(w: QWidget) -> QWidget:
+        """Tab pages scroll instead of being squeezed on small / scaled screens."""
+        from PySide6.QtWidgets import QFrame, QScrollArea
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QFrame.NoFrame)
+        sc.setWidget(w)
+        return sc
+
+    def show_tab(self, w: QWidget) -> None:
+        if w in self._tab_pages:
+            self.tabs.setCurrentIndex(self._tab_pages[w])
 
     # ------------------------------------------------------------ DMX sources
     def prog_dmx(self) -> dict[int, bytes]:
@@ -639,7 +673,7 @@ class MainWindow(QMainWindow):
         self.view.set_mode(mode)
         self.stage.sync_mode()
         if mode != "3d":
-            self.tabs.setCurrentWidget(self.stage)
+            self.show_tab(self.stage)
 
     def _vis_click(self, fid: int, add: bool) -> None:
         if fid < 0:
@@ -666,7 +700,7 @@ class MainWindow(QMainWindow):
 
     def _edit_playback(self, st) -> None:
         self.cues.bind(st)
-        self.tabs.setCurrentWidget(self.cues)
+        self.show_tab(self.cues)
 
     def _go_current(self) -> None:
         if self.cues.st:
