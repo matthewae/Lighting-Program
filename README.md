@@ -15,6 +15,8 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
 
 ![Splash](docs/splash.png)
 
+![Model 3D fixture](docs/screenshot_models.png)
+
 ![Programmer + effects + visualizer 3D](docs/screenshot_programmer.png)
 
 ![Beam: gobo, prism, frost](docs/screenshot_beam.png)
@@ -54,10 +56,13 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
 
 ## Fitur
 
-- **Visualizer 3D** dengan **model per tipe fixture**: moving head *beam / spot / wash* (base, yoke
-  dan head ikut pan/tilt), LED PAR, fresnel, strobe, LED bar, blinder, fog/hazer (dengan asap).
-  Beam berwarna, light pool di lantai/dinding, zoom/frost, strobe/shutter, haze.
-  Model bisa diganti di *Patch → Edit fixture type & 3D model*.
+- **Visualizer 3D** dengan **model 3D per tipe fixture** (low-poly, dibuat khusus untuk MiniDesk):
+  moving head *beam / hybrid / spot / wash* (base, yoke dan head ikut pan/tilt, beam keluar dari
+  lensa), LED PAR, fresnel dengan barn door, strobe bar, LED bar, blinder, hazer, fog machine dan
+  fog vertikal dengan LED (dengan asap), plus **box truss & tower** otomatis. Model dipilih otomatis
+  dari nama fixture (CM-280 → beam, AS_BSW350 → hybrid, CLED-543/PAR → LED PAR, DSK-1500VS → fog
+  vertikal, …) dan bisa diganti / **di-import sendiri (OBJ, GLB/glTF, STL)** dengan preview 3D di
+  *Patch → Edit fixture type & 3D model*. Lihat [`docs/MODELS.md`](docs/MODELS.md).
 - **Stage Layout** (tab khusus): ukuran panggung, view **Top** (geser kiri/kanan + depan/belakang)
   dan **Front** (geser kiri/kanan + tinggi), drag fixture dengan snap grid, pilih banyak (Ctrl+klik
   atau tarik kotak), form X/Y/Z, mount, arah (yaw) dan tilt, tombol *Line up*, *Distribute*,

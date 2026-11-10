@@ -5,14 +5,16 @@ import math
 import time
 from typing import Callable, Optional
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QLineF, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QLinearGradient, QPainter, QPen, QPolygonF,
                            QRadialGradient)
 from PySide6.QtWidgets import QWidget
 
+from ..meshes import get_mesh
 from ..model import MOVING_KINDS, Show
 from ..vis_state import VisState, compute
 from .fixture_models import draw_icon
+from .mesh_render import Camera, lens_origin, mesh_faces, part_transforms
 
 Vec = tuple[float, float, float]
 LIGHT = (0.35, -0.55, 0.76)
@@ -36,6 +38,11 @@ def _dot(a: Vec, b: Vec) -> float:
 
 def _cross(a: Vec, b: Vec) -> Vec:
     return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def _v(a):
+    import numpy as _np
+    return _np.array(a, dtype=float)
 
 
 def _norm(a: Vec) -> Vec:
@@ -69,7 +76,7 @@ class StageView(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update)
-        self.timer.start(33)
+        self.timer.start(45)
 
     def set_show(self, show: Show) -> None:
         self.show = show
@@ -330,19 +337,47 @@ class StageView(QWidget):
             self._line(p, (-hw, j, 0), (hw, j, 0))
         p.setPen(QPen(QColor(90, 90, 110), 2))
         self._line(p, (-W / 2, 0, 0), (W / 2, 0, 0))
-        # trusses
-        p.setPen(QPen(QColor(95, 98, 110), 4))
+        # trusses (rigging) – box truss meshes along the hanging positions
+        cam = Camera(self.target, self.yaw, self.pitch, self.dist, self.width(), self.height())
+        self._faces = []
         levels = {}
         for fx in self.show.fixtures:
             if fx.mount == "hang" and abs(fx.x) <= W / 2 + 0.01:
                 key = (round(fx.y, 1), round(fx.z, 1))
                 lo, hi = levels.get(key, (fx.x, fx.x))
                 levels[key] = (min(lo, fx.x), max(hi, fx.x))
-        for (y, z), (lo, hi) in levels.items():
-            self._line(p, (lo - 0.6, y, z + 0.38), (hi + 0.6, y, z + 0.38))
+        towers = {}
         for fx in self.show.fixtures:
             if abs(fx.x) > W / 2 + 0.01:
-                self._line(p, (fx.x, fx.y, 0), (fx.x, fx.y, fx.z + 0.6))
+                k = (round(fx.x, 1), round(fx.y, 1))
+                towers[k] = max(towers.get(k, 0.0), fx.z)
+        for (y, z), (lo, hi) in levels.items():
+            self._draw_truss(p, cam, (lo - 0.6, y, z + 0.16), (hi + 0.6, y, z + 0.16))
+        for (x, y), top in towers.items():
+            xo = x + 0.25 * (1 if x > 0 else -1)
+            self._draw_truss(p, cam, (xo, y, 0.0), (xo, y, top + 0.6))
+
+        # fixture meshes (also gives the lens position where each beam starts)
+        lens_pos = {}
+        fixture_faces = []
+        for fx in self.show.fixtures:
+            ft = self.show.types[fx.type_key]
+            st = self._states.get(fx.fid)
+            if st is None:
+                continue
+            floor = fx.mount == "floor"
+            fog = ft.kind == "fog"
+            pos = (fx.x, fx.y, 0.0 if (fog and floor) else fx.z)
+            lod = 1 if cam.px_size(pos, 0.5) > 70 else 0
+            mesh = get_mesh(ft.model, ft.kind, ft.model_scale, lod)
+            if mesh is None:
+                continue
+            tr = part_transforms(mesh, pos, st.yaw, st.tilt, fx.rot, floor, fog)
+            if not fog:
+                lens_pos[fx.fid] = tuple(lens_origin(mesh, pos, st.direction, floor, st.yaw))
+            if self.show_models:
+                mesh_faces(cam, mesh, tr, self._emissive(st),
+                           QColor(255, 200, 0) if fx.fid in self.selection else None, fixture_faces)
 
         # beams (additive)
         beams = []
@@ -351,7 +386,7 @@ class StageView(QWidget):
             if not st or st.intensity <= 0.01 or not st.has_beam:
                 continue
             kind = self.show.types[fx.type_key].kind
-            pos = _add((fx.x, fx.y, fx.z), _mul(st.direction, self._lens_offset(kind)))
+            pos = lens_pos.get(fx.fid) or _add((fx.x, fx.y, fx.z), _mul(st.direction, self._lens_offset(kind)))
             L = self._hit(pos, st.direction)
             end = _add(pos, _mul(st.direction, L))
             beams.append((self.to_cam(end)[1], fx, st, pos, end, L))
@@ -386,20 +421,22 @@ class StageView(QWidget):
         p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         self._draw_fog(p)
 
-        # fixture models
+        # fixture models + trusses, painter's algorithm (far first)
         self._screen_pos.clear()
-        self._faces = []
         for fx in self.show.fixtures:
             q = self.project((fx.x, fx.y, fx.z))
-            if q is None:
-                continue
-            self._screen_pos[fx.fid] = q
-            if self.show_models:
-                self._model(fx, self.show.types[fx.type_key].kind, self._states.get(fx.fid),
-                            fx.fid in self.selection)
+            if q is not None:
+                self._screen_pos[fx.fid] = q
+        self._faces += fixture_faces
         self._faces.sort(key=lambda f: -f[0])
+        edge = QPen(QColor(10, 10, 12, 120), 0.5)
+        sel_pen = QPen(QColor(255, 200, 0), 1.2)
+        cur = None
         for _d, poly, col, outline in self._faces:
-            p.setPen(QPen(outline, 1.5) if outline else QPen(QColor(10, 10, 12, 160), 0.6))
+            pen = sel_pen if outline is not None else edge
+            if pen is not cur:
+                p.setPen(pen)
+                cur = pen
             p.setBrush(col)
             p.drawPolygon(poly)
         font = QFont()
@@ -418,6 +455,50 @@ class StageView(QWidget):
                 p.setPen(QColor(255, 210, 60) if sel else QColor(160, 162, 178))
                 p.drawText(q + QPointF(-6, -16 if fx.mount == "hang" else 20), str(fx.fid))
         self._hud(p, "3D  |  drag: orbit   wheel: zoom   click: select (Ctrl = add)   Tab: next view")
+
+    def _draw_truss(self, p: QPainter, cam, a: Vec, b: Vec, size: float = 0.29) -> None:
+        """Box truss drawn with lines (vectorised): 4 chords, rungs and diagonals."""
+        import numpy as np
+        if not self.show_models:
+            p.setPen(QPen(QColor(95, 98, 110), 4))
+            self._line(p, a, b)
+            return
+        A, B = np.array(a, float), np.array(b, float)
+        L = float(np.linalg.norm(B - A)) or 1.0
+        u = (B - A) / L
+        side = np.array([0.0, 1.0, 0.0]) if abs(u[1]) < 0.9 else np.array([1.0, 0.0, 0.0])
+        w = np.cross(u, side)
+        w /= np.linalg.norm(w)
+        side = np.cross(w, u)
+        h = size / 2
+        corners = np.array([side * sy * h + w * sz * h for sy, sz in ((-1, -1), (1, -1), (1, 1), (-1, 1))])
+        mid = tuple((A + B) / 2)
+        px = cam.px_size(mid, 0.03)
+        n = int(L / size) if cam.px_size(mid, size) > 10 else 0
+        n = min(n, 200)
+        t = np.linspace(0.0, L, n + 1) if n else np.array([0.0, L])
+        pts = A[None, None, :] + t[:, None, None] * u[None, None, :] + corners[None, :, :]   # (k, 4, 3)
+        C = cam.to_cam(pts.reshape(-1, 3))
+        if (C[:, 1] < 0.25).any():
+            return
+        sx, sy = cam.project(C)
+        sx, sy = sx.reshape(len(t), 4), sy.reshape(len(t), 4)
+        lines = []
+        for c in range(4):                       # chords
+            lines.append(QLineF(sx[0, c], sy[0, c], sx[-1, c], sy[-1, c]))
+        p.setPen(QPen(QColor(175, 178, 186), max(1.0, min(4.0, px))))
+        p.drawLines(lines)
+        if n:
+            rl = []
+            for i in range(len(t)):
+                for c in range(4):
+                    rl.append(QLineF(sx[i, c], sy[i, c], sx[i, (c + 1) % 4], sy[i, (c + 1) % 4]))
+                if i < len(t) - 1:               # zig-zag diagonals on two sides
+                    c0, c1 = (0, 1) if i % 2 == 0 else (1, 0)
+                    rl.append(QLineF(sx[i, c0], sy[i, c0], sx[i + 1, c1], sy[i + 1, c1]))
+                    rl.append(QLineF(sx[i, 2 + c0], sy[i, 2 + c0], sx[i + 1, 2 + c1], sy[i + 1, 2 + c1]))
+            p.setPen(QPen(QColor(150, 153, 162), max(0.8, min(2.5, px * 0.6))))
+            p.drawLines(rl)
 
     @staticmethod
     def _offset_dir(d: Vec, ang: float, phi: float) -> Vec:

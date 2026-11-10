@@ -44,6 +44,8 @@ class FixtureType:
     tilt_range: float = 270.0     # degrees
     kind: str = "par"             # visual model, see MODEL_KINDS
     lib_index: int = -1           # index in the console fixture library (-1 = not from console)
+    model: str = ""               # 3D model: built-in name (see meshes.BUILTIN) or OBJ/GLB/STL file path
+    model_scale: float = 1.0      # extra scale for imported models (they are auto-fitted first)
 
     @property
     def key(self) -> str:
@@ -84,6 +86,14 @@ class FixtureType:
             self.kind, self.beam_angle = "par", 25
         else:
             self.kind, self.beam_angle = "generic", 30
+        # 3D model (only the look – channels / addresses come from the profile)
+        if self.kind == "fog":
+            self.model = "fog_vertical" if (" vs" in f" {n}" or "vs " in n or "vertical" in n or "1500vs" in n) \
+                else ("hazer" if "haz" in n else "fog")
+        elif self.is_moving:
+            self.model = "hybrid" if ("bsw" in n or "hybrid" in n) else self.kind
+        else:
+            self.model = self.kind if self.kind != "generic" else "par" if attrs & {"red", "green", "blue"} else "generic"
         # moving heads should start with an open shutter
         if self.is_moving:
             for c in self.channels:

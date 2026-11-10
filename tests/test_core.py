@@ -414,3 +414,55 @@ def test_artpoll_reply_parse():
     rep = parse_artpollreply(bytes(pkt))
     assert rep["ip"] == "192.168.0.231" and rep["short"] == "MINI"
     assert same_subnet("192.168.0.10", "192.168.0.231") and not same_subnet("10.0.0.2", "192.168.0.231")
+
+
+# -------------------------------------------------------------- 3D models
+def test_builtin_models_and_obj_roundtrip(tmp_path):
+    from minidesk.meshes import BUILTIN, build_model, load_obj, write_obj
+    for k in BUILTIN:
+        m = build_model(k)
+        assert m.face_count > 0
+        p = tmp_path / f"{k}.obj"
+        write_obj(m, str(p))
+        r = load_obj(str(p))
+        assert r.face_count == m.face_count
+        assert set(r.parts) <= {"base", "yoke", "head"} | set(m.parts)
+        assert abs(r.pivot[2] - m.pivot[2]) < 1e-3
+        assert r.parts and any(p_.EM.any() for p_ in r.parts.values()) or k in ("fog", "hazer")
+
+
+def test_stl_and_gltf_import(tmp_path):
+    import json
+    import struct
+    from minidesk.meshes import fit_scale, load_model
+    stl = tmp_path / "a.stl"
+    stl.write_text("solid a\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 100 0 0\n"
+                   "vertex 0 100 0\nendloop\nendfacet\nendsolid a\n")
+    m = load_model(str(stl))
+    assert m.face_count == 1 and 0.002 < fit_scale(m, "par") < 0.004      # mm model gets fitted
+    # minimal glb: one triangle in a node called "Head", emissive material
+    pos = struct.pack("<9f", 0, 0, 0, 1, 0, 0, 0, 1, 0)
+    gj = {"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+          "nodes": [{"name": "Head", "mesh": 0}],
+          "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "material": 0}]}],
+          "materials": [{"name": "Lens", "emissiveFactor": [1, 1, 1]}],
+          "buffers": [{"byteLength": len(pos)}],
+          "bufferViews": [{"buffer": 0, "byteLength": len(pos)}],
+          "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"}]}
+    js = json.dumps(gj).encode()
+    js += b" " * (-len(js) % 4)
+    body = struct.pack("<I4s", len(js), b"JSON") + js + struct.pack("<I4s", len(pos), b"BIN\x00") + pos
+    glb = tmp_path / "a.glb"
+    glb.write_bytes(b"glTF" + struct.pack("<II", 2, 12 + len(body)) + body)
+    g = load_model(str(glb))
+    assert list(g.parts) == ["head"] and g.parts["head"].EM.all()
+    # Y-up -> Z-up: the vertex (0, 1, 0) becomes (0, 0, 1)
+    assert any(abs(v[2] - 1) < 1e-6 for v in g.parts["head"].verts)
+
+
+def test_model_choice_for_console_fixtures(imported):
+    show, _ = imported
+    model = {t.name: t.model for t in show.types.values()}
+    assert model["CM-280V2@16"] == "beam" and model["AS_BSW350"] == "hybrid"
+    assert model["CLED-543"] == "par" and model["STROBE 2.5"] == "strobe"
+    assert model["DSK-1500VS"] == "fog_vertical" and model["HAZER"] == "hazer"

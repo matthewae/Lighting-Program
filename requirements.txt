@@ -2,3 +2,4 @@
 # (much smaller than the full PySide6 package with WebEngine/Addons).
 PySide6-Essentials>=6.5
 pyserial>=3.5
+numpy>=1.24

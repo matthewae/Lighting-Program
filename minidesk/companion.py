@@ -46,7 +46,7 @@ def save(show: Show) -> str:
         "positions": {str(f.slot if f.slot >= 0 else -f.fid): [f.x, f.y, f.z, f.mount, f.rot, f.aim]
                       for f in show.fixtures},
         "types": {k: {"kind": t.kind, "beam_angle": t.beam_angle, "pan_range": t.pan_range,
-                      "tilt_range": t.tilt_range,
+                      "tilt_range": t.tilt_range, "model": t.model, "model_scale": t.model_scale,
                       "channels": [[c.attr, c.default, c.ranges] for c in t.channels]}
                   for k, t in show.types.items()},
         "output": asdict(show.output),
@@ -99,6 +99,10 @@ def load(show: Show) -> bool:
             continue
         ft.kind, ft.beam_angle = t.get("kind", ft.kind), t.get("beam_angle", ft.beam_angle)
         ft.pan_range, ft.tilt_range = t.get("pan_range", ft.pan_range), t.get("tilt_range", ft.tilt_range)
+        if t.get("model") and (t["model"] in __import__("minidesk.meshes", fromlist=["BUILTIN"]).BUILTIN
+                               or os.path.exists(t["model"])):
+            ft.model = t["model"]
+        ft.model_scale = t.get("model_scale", ft.model_scale)
         chans = t.get("channels", [])
         if len(chans) == len(ft.channels):
             for c, row in zip(ft.channels, chans):

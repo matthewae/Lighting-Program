@@ -43,7 +43,8 @@ console langsung muncul.</li>
 <li><b>Stage Layout</b> (tab): atur ukuran panggung lalu pilih <i>Top</i> atau <i>Front</i> dan drag fixture
 ke posisinya. Pilih banyak fixture (Ctrl+klik / tarik kotak) lalu pakai tombol align.</li>
 <li><b>Patch</b> (tab): ganti nama, tipe, universe, address. <i>Edit fixture type &amp; 3D model</i> untuk
-memilih model (beam, spot, wash, PAR, fresnel, strobe, LED bar, blinder, fog).</li>
+memilih model 3D (beam, hybrid, spot, wash, PAR, fresnel, strobe, LED bar, blinder, hazer, fog) atau
+<b>import model sendiri</b> (OBJ, GLB/glTF, STL) – lengkap dengan preview yang berputar.</li>
 <li><b>Fixtures / Groups</b>: klik group/fixture untuk memilih. Klik kanan group: rename / update / delete.</li>
 <li><b>Programmer</b>: atur intensity, color, position, beam. Tab <b>Effects ✦</b> untuk effect
 (circle, figure 8, wave, dimmer chase/sine/random, strobe, rainbow, color chase) dengan speed, size,

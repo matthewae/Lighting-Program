@@ -9,8 +9,17 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogBut
 
 from ..attributes import FEATURE_OF
 from ..engine import Engine
+import os
+import shutil
+
+from PySide6.QtWidgets import QFileDialog
+
+from .. import meshes
 from ..model import MODEL_KINDS, Fixture, FixtureType, Show, builtin_types
 from .fixture_models import model_icon
+from .model_preview import ModelPreview
+
+USER_MODELS = os.path.join(os.path.expanduser("~"), ".minidesk", "models")
 
 COLS = ["ID", "Name", "Type", "Model", "Univ", "Addr", "Ch"]
 NAME_MAX = 16
@@ -251,7 +260,7 @@ class TypeEditor(QDialog):
         super().__init__(parent)
         self.ft = ft
         self.setWindowTitle(f"Fixture type: {ft.key}")
-        self.resize(600, 640)
+        self.resize(680, 860)
         lay = QVBoxLayout(self)
         form = QFormLayout()
         self.kind = QComboBox()
@@ -267,7 +276,31 @@ class TypeEditor(QDialog):
         self.tilt = QDoubleSpinBox()
         self.tilt.setRange(0, 360)
         self.tilt.setValue(ft.tilt_range)
-        form.addRow("3D model", self.kind)
+        form.addRow("Kind (behaviour)", self.kind)
+        self.model = QComboBox()
+        for k in meshes.BUILTIN:
+            self.model.addItem(meshes.BUILTIN_LABELS[k], k)
+        if ft.model and ft.model not in meshes.BUILTIN:
+            self.model.addItem(f"File: {os.path.basename(ft.model)}", ft.model)
+        cur = ft.model or meshes.default_model(ft.kind)
+        self.model.setCurrentIndex(max(0, self.model.findData(cur)))
+        self.model.currentIndexChanged.connect(self._preview)
+        b_imp = QPushButton("Import model file (OBJ / GLB / glTF / STL)…")
+        b_imp.clicked.connect(self._import_model)
+        self.mscale = QDoubleSpinBox()
+        self.mscale.setRange(0.05, 20)
+        self.mscale.setSingleStep(0.1)
+        self.mscale.setValue(ft.model_scale)
+        self.mscale.setToolTip("Imported models are fitted to a typical fixture size first; this multiplies it")
+        self.mscale.valueChanged.connect(self._preview)
+        mrow = QHBoxLayout()
+        mrow.addWidget(self.model, 1)
+        mrow.addWidget(b_imp)
+        form.addRow("3D model (look)", mrow)
+        form.addRow("Model scale", self.mscale)
+        self.preview = ModelPreview()
+        form.addRow(self.preview)
+        self._preview()
         form.addRow("Beam angle (°)", self.beam)
         form.addRow("Pan range (°)", self.pan)
         form.addRow("Tilt range (°)", self.tilt)
@@ -301,6 +334,39 @@ class TypeEditor(QDialog):
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
 
+    def _preview(self, *_):
+        model = self.model.currentData()
+        self.preview.set_model(model, self.kind.currentData() or self.ft.kind, self.mscale.value())
+
+    def _import_model(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import 3D model", "",
+                                              "3D models (*.obj *.glb *.gltf *.stl);;All files (*)")
+        if not path:
+            return
+        try:
+            m = meshes.load_model(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Import model", f"Could not read the model:\n{e}")
+            return
+        os.makedirs(USER_MODELS, exist_ok=True)
+        dst = os.path.join(USER_MODELS, os.path.basename(path))
+        if os.path.abspath(path) != os.path.abspath(dst):
+            shutil.copy2(path, dst)
+            if path.lower().endswith(".obj"):            # copy the material file next to it
+                for ln in open(path, encoding="utf-8", errors="replace"):
+                    if ln.startswith("mtllib"):
+                        mtl = os.path.join(os.path.dirname(path), ln.split(None, 1)[1].strip())
+                        if os.path.exists(mtl):
+                            shutil.copy2(mtl, os.path.join(USER_MODELS, os.path.basename(mtl)))
+        meshes.clear_cache()
+        self.model.addItem(f"File: {os.path.basename(dst)}", dst)
+        self.model.setCurrentIndex(self.model.count() - 1)
+        parts = ", ".join(m.parts)
+        hint = "" if "head" in m.parts or not self.ft.is_moving else \
+            "\n\nTip: name the moving parts 'base', 'yoke' and 'head' so the head follows pan/tilt."
+        QMessageBox.information(self, "Import model", f"{m.face_count} polygons, parts: {parts}.{hint}"
+                                + ("\n\nWarning: large model – may slow down the 3D view." if m.face_count > 3000 else ""))
+
     def _ranges(self, ch, btn) -> None:
         ch.attr = self.combos[self.ft.channels.index(ch)].currentText()
         d = RangesDialog(ch, self.ft.is_moving, self)
@@ -312,6 +378,8 @@ class TypeEditor(QDialog):
         ft = self.ft
         ft.kind, ft.beam_angle = self.kind.currentData(), self.beam.value()
         ft.pan_range, ft.tilt_range = self.pan.value(), self.tilt.value()
+        ft.model, ft.model_scale = self.model.currentData(), self.mscale.value()
+        meshes.clear_cache()
         for r, ch in enumerate(ft.channels):
             ch.name = self.table.item(r, 0).text()
             ch.attr = self.combos[r].currentText()

@@ -21,6 +21,8 @@ class VisState:
     prism: int = 0            # number of facets (0 = off)
     prism_angle: float = 0.0  # degrees
     frost: float = 0.0        # 0..1
+    yaw: float = 0.0          # degrees: fixture facing + pan
+    tilt: float = 0.0         # degrees from straight down (hanging) / up (floor)
 
 
 def _get(dmx: bytes, base: int, i: int) -> int:
@@ -55,7 +57,7 @@ def compute(fx: Fixture, ft: FixtureType, dmx: bytes, now: float) -> VisState:
     base = fx.address - 1
     if not fx.patched:
         return VisState(0.0, (0, 0, 0), aim_direction(fx.aim, fx.rot, fx.mount == "floor"),
-                        ft.beam_angle, 0.0, False)
+                        ft.beam_angle, 0.0, False, yaw=fx.rot, tilt=fx.aim)
     vals: dict[str, list[int]] = {}
     fine: dict[str, int] = {}
     chan_of: dict[str, object] = {}
@@ -124,6 +126,7 @@ def compute(fx: Fixture, ft: FixtureType, dmx: bytes, now: float) -> VisState:
         t = (tilt - 0.5) * ft.tilt_range
         direction = aim_direction(t, yaw, floor)
     else:
+        yaw, t = fx.rot, fx.aim
         direction = aim_direction(fx.aim, fx.rot, floor)
     # --- beam --------------------------------------------------------------
     moving = ft.is_moving
@@ -175,4 +178,4 @@ def compute(fx: Fixture, ft: FixtureType, dmx: bytes, now: float) -> VisState:
     return VisState(intensity=max(0.0, min(1.0, inten * gate)), colour=col, direction=direction,
                     beam_angle=angle, fog=fog, has_beam=ft.kind != "fog" or have_rgb,
                     gobo=gobo, gobo_angle=rot("gobo_rot"), prism=prism, prism_angle=prism_angle,
-                    frost=frost)
+                    frost=frost, yaw=yaw, tilt=t)
