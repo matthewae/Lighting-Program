@@ -168,6 +168,14 @@ New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name
 
 ## Menjalankan
 
+Cara singkat (dari folder proyek):
+
+```bash
+python src/main.py samples/GMS_MATT.SHO
+```
+
+atau:
+
 ```bash
 python -m minidesk
 ```
