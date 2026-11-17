@@ -203,6 +203,8 @@ class MainWindow(QMainWindow):
             splash.step("Creating stage view…")
         self._build()
         self._apply_prefs()
+        self.set_layout(str(self.settings.value("layout", "both")))
+        self.toggle_faders(self.settings.value("faders", True, type=bool))
         self.runner = EngineRunner(self.engine, self._send)
         self.runner.start()
         self.status_timer = QTimer(self)
@@ -258,6 +260,12 @@ class MainWindow(QMainWindow):
         action(m, "Top view (edit X/Y)", lambda: self._view("top"), "F6")
         action(m, "Front view (edit X/Z)", lambda: self._view("front"), "F7")
         action(m, "Reset camera", lambda: self.view.reset_camera())
+        m.addSeparator()
+        action(m, "Layout: stage + panels", lambda: self.set_layout("both"), "F8")
+        action(m, "Layout: panels only (programming)", lambda: self.set_layout("panels"), "F9")
+        action(m, "Layout: stage only", lambda: self.set_layout("stage"), "F10")
+        self.a_faders = action(m, "Show playback faders", lambda v=None: self.toggle_faders(), "F11", checkable=True)
+        self.a_faders.setChecked(True)
         m = mb.addMenu("&Console")
         action(m, "Connect console (DMX / Art-Net / MIDI)…", self.connect_wizard, "Ctrl+K")
         action(m, "Advanced DMX input / output…", self.io_settings)
@@ -318,6 +326,15 @@ class MainWindow(QMainWindow):
         haze.valueChanged.connect(lambda v: setattr(self.view, "haze", v / 100))
         self.haze_slider = haze
         tb.addWidget(haze)
+        tb.addSeparator()
+        tb.addWidget(QLabel(" Layout "))
+        self.layout_box = QComboBox()
+        for key, label in (("both", "Stage + panels"), ("panels", "Panels only"), ("stage", "Stage only")):
+            self.layout_box.addItem(label, key)
+        self.layout_box.setToolTip("F8 stage + panels, F9 panels only (programming), F10 stage only, "
+                                   "F11 show / hide the playback faders")
+        self.layout_box.currentIndexChanged.connect(lambda _i: self.set_layout(self.layout_box.currentData()))
+        tb.addWidget(self.layout_box)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tb.addWidget(spacer)
@@ -331,8 +348,9 @@ class MainWindow(QMainWindow):
         self.banner = QLabel()
         self.banner.setWordWrap(True)
         self.banner.setTextFormat(Qt.RichText)
-        self.banner.setStyleSheet("padding:7px 12px; background:#171b26; border-bottom:1px solid #262c3d; "
+        self.banner.setStyleSheet("padding:3px 10px; background:#171b26; border-bottom:1px solid #262c3d; "
                                   "border-radius:0px;")
+        self.banner.setWordWrap(False)
 
         self.view = StageView(self.engine.show, self.vis_dmx)
         self.view.fixtureClicked.connect(self._vis_click)
@@ -384,15 +402,15 @@ class MainWindow(QMainWindow):
         self.cfx.storeRequested.connect(self.store_dialog)
         self.fx.changed.connect(self.cfx.refresh)
         self.fx_tabs = QTabWidget()
-        self.fx_tabs.addTab(self.cfx, "Effect Select (console library)")
-        self.fx_tabs.addTab(self.fx, "Effect editor (all parameters)")
+        self.fx_tabs.addTab(self._scroll(self.cfx), "Effect Select (console)")
+        self.fx_tabs.addTab(self._scroll(self.fx), "Effect editor")
         self.cfx.manualRequested.connect(lambda: self.fx_tabs.setCurrentIndex(1))
         self.live.effectsRequested.connect(lambda: (self.show_tab(self.fx_tabs), self.fx_tabs.setCurrentIndex(0)))
         from .nav import NavTabs
         self.tabs = NavTabs()
         self._tab_pages = {}
         for w, label, ic in ((self.live, "Live", "live"),
-                             (self.sheet, "Fixtures", "fixtures"), (self.prog, "Programmer", "programmer"),
+                             (self.sheet, "Fixtures", "fixtures"), (self.prog, "Program", "programmer"),
                              (self.fx_tabs, "Effects", "effects"), (self.presets, "Presets", "presets"),
                              (self.cues, "Cues", "cues"), (self.stage, "Stage", "stage"),
                              (self.patch, "Patch", "patch"), (self.monitor, "DMX", "dmx")):
@@ -402,9 +420,10 @@ class MainWindow(QMainWindow):
         top.setChildrenCollapsible(False)
         top.addWidget(self.view)
         top.addWidget(self.tabs)
-        top.setStretchFactor(0, 5)
-        top.setStretchFactor(1, 4)
-        top.setSizes([900, 760])
+        top.setStretchFactor(0, 4)
+        top.setStretchFactor(1, 5)
+        top.setSizes([720, 940])
+        self.top_split = top
         self.execs = ExecutorBar(self.engine)
         self.execs.playbackSelected.connect(self._edit_playback)
         self.execs.playbackTriggered.connect(self._feedback)
@@ -416,11 +435,12 @@ class MainWindow(QMainWindow):
         ex_sc.setWidgetResizable(True)
         ex_sc.setFrameShape(QFrame.NoFrame)
         ex_sc.setWidget(self.execs)
-        ex_sc.setMinimumHeight(252)
+        ex_sc.setMinimumHeight(150)
         vs.addWidget(ex_sc)
         vs.setStretchFactor(0, 3)
         vs.setStretchFactor(1, 1)
-        vs.setSizes([700, 260])
+        vs.setSizes([760, 168])
+        self.v_split, self.faders_area = vs, ex_sc
 
         self.cmdline = QLineEdit()
         self.cmdline.setObjectName("cmd")
@@ -697,11 +717,10 @@ class MainWindow(QMainWindow):
         if self.doc:
             state = ("<span style='color:#ffb347'>● unsaved changes – press <b>Ctrl+S</b></span>"
                      if self.dirty else "<span style='color:#7fdf7f'>✔ saved</span>")
-            self.banner.setText(
-                f"🔌 <b>Console file:</b> {self.doc.path}   {state}<br>"
-                "<span style='color:#9aa'>Save writes fixture names, types, DMX addresses, groups and playback "
-                "names straight into this .SHO (CRC updated, file re-read to verify). Copy it to the USB stick "
-                "and load it on the console.</span>")
+            self.banner.setText(f"🔌 <b>Console file:</b> {self.doc.path}   {state}")
+            self.banner.setToolTip("Save writes fixture names, types, DMX addresses, groups and playback names "
+                                   "straight into this .SHO (CRC updated, file re-read to verify). Copy it to "
+                                   "the USB stick and load it on the console.")
         elif self.path:
             self.banner.setText(f"🗂 <b>MiniDesk project:</b> {self.path}"
                                 + ("   <span style='color:#ffb347'>● unsaved</span>" if self.dirty else ""))
@@ -710,6 +729,24 @@ class MainWindow(QMainWindow):
                                 "console show, or patch fixtures in the Patch tab.")
 
     # ---------------------------------------------------------------- actions
+    # ---------------------------------------------------------------- layout
+    def set_layout(self, mode: str) -> None:
+        """both = stage + panels, panels = programming (no stage), stage = stage view only."""
+        self.view.setVisible(mode != "panels")
+        self.tabs.setVisible(mode != "stage")
+        i = self.layout_box.findData(mode)
+        if i >= 0 and self.layout_box.currentIndex() != i:
+            self.layout_box.blockSignals(True)
+            self.layout_box.setCurrentIndex(i)
+            self.layout_box.blockSignals(False)
+        self.settings.setValue("layout", mode)
+
+    def toggle_faders(self, on: bool | None = None) -> None:
+        on = (not self.faders_area.isVisible()) if on is None else on
+        self.faders_area.setVisible(on)
+        self.a_faders.setChecked(on)
+        self.settings.setValue("faders", on)
+
     def _blackout(self, on: bool) -> None:
         self.engine.blackout = on
 

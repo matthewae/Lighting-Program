@@ -15,7 +15,7 @@ class DmxGrid(QWidget):
         super().__init__(parent)
         self.data = bytes(512)
         self.owner: dict[int, int] = {}
-        self.setMinimumSize(32 * 28, 16 * 26)
+        self.setMinimumSize(32 * 17, 16 * 19)
 
     def paintEvent(self, e):
         p = QPainter(self)

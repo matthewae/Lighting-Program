@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox,
                                QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
                                QVBoxLayout, QWidget)
 
@@ -30,21 +30,25 @@ class StageEditor(QWidget):
         self.view = view
         self._loading = False
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(4, 4, 4, 4)
-        info = QLabel("<b>Edit the stage here.</b> Choose <b>Top</b> (move left/right + front/back) or "
-                      "<b>Front</b> (move left/right + height) and drag fixtures in the stage view. "
-                      "Select several fixtures (Ctrl-click or drag a box) to move or align them together. "
-                      "The layout is saved with your show.")
-        info.setWordWrap(True)
-        lay.addWidget(info)
+        lay.setContentsMargins(4, 2, 4, 2)
+        lay.setSpacing(4)
+        self.setToolTip("Choose Top (left/right + front/back) or Front (left/right + height) and drag fixtures "
+                        "in the stage view. Ctrl-click or drag a box to select several fixtures. "
+                        "The layout is saved with your show.")
 
-        gv = QGroupBox("Stage view")
-        hv = QHBoxLayout(gv)
+        # stage view row
+        hv = QHBoxLayout()
+        hv.setSpacing(3)
+        t = QLabel("Stage")
+        t.setObjectName("title")
+        hv.addWidget(t)
         self.view_group = QButtonGroup(self)
-        for i, (label, mode) in enumerate((("3D", "3d"), ("Top – edit X/Y", "top"), ("Front – edit X/Z", "front"))):
+        for i, (label, mode, tip) in enumerate((("3D", "3d", "3D view"), ("Top", "top", "Top view: drag = move X/Y"),
+                                                ("Front", "front", "Front view: drag = move X/height"))):
             b = QPushButton(label)
             b.setCheckable(True)
             b.setChecked(mode == view.mode)
+            b.setToolTip(tip)
             b.clicked.connect(lambda _=False, m=mode: self._mode(m))
             self.view_group.addButton(b, i)
             hv.addWidget(b)
@@ -55,7 +59,7 @@ class StageEditor(QWidget):
         self.snap.setCurrentText("0.25")
         self.snap.currentTextChanged.connect(lambda t: setattr(self.view, "snap", 0 if t == "off" else float(t)))
         hv.addWidget(self.snap)
-        self.cb_models = QCheckBox("3D models")
+        self.cb_models = QCheckBox("Models")
         self.cb_models.setChecked(True)
         self.cb_models.toggled.connect(lambda v: (setattr(self.view, "show_models", v), self.view._sync_overlay()))
         self.cb_labels = QCheckBox("Labels")
@@ -63,63 +67,61 @@ class StageEditor(QWidget):
         self.cb_labels.toggled.connect(lambda v: (setattr(self.view, "show_labels", v), self.view._sync_overlay()))
         hv.addWidget(self.cb_models)
         hv.addWidget(self.cb_labels)
-        lay.addWidget(gv)
+        hv.addStretch(1)
+        lay.addLayout(hv)
 
-        gvn = QGroupBox("Venue layout")
+        # venue + stage
+        gvn = QGroupBox("Venue and stage")
         gvl = QGridLayout(gvn)
+        gvl.setVerticalSpacing(3)
         self.venue_label = QLabel()
-        self.venue_label.setWordWrap(True)
         gvl.addWidget(self.venue_label, 0, 0, 1, 4)
-        b_venue = QPushButton("Apply GMS hall layout (from the venue photos)")
-        b_venue.setToolTip("Back bar near the wall, front bar, two black truss towers, FOH fresnel bar "
-                           "and the projection screen – fixtures numbered left → right")
+        b_venue = QPushButton("Apply GMS hall layout")
+        b_venue.setToolTip("From the venue photos: back bar near the wall, front bar, two black truss towers, "
+                           "FOH fresnel bar and the projection screen – fixtures numbered left → right")
         b_venue.clicked.connect(self.apply_venue)
-        gvl.addWidget(b_venue, 1, 0, 1, 4)
-        self.cb_screen = QCheckBox("Screen on the back wall")
+        gvl.addWidget(b_venue, 0, 4, 1, 2)
+        self.cb_screen = QCheckBox("Screen")
+        self.cb_screen.setToolTip("Projection screen on the back wall")
         self.cb_screen.toggled.connect(self._screen)
         self.sw, self.sh = _spin(1, 40), _spin(0.5, 20)
         self.sw.valueChanged.connect(self._screen)
         self.sh.valueChanged.connect(self._screen)
+        self.w, self.d, self.h = _spin(2, 60), _spin(2, 60), _spin(2, 30)
+        gvl.addWidget(QLabel("Stage W / D / H"), 1, 0)
+        gvl.addWidget(self.w, 1, 1)
+        gvl.addWidget(self.d, 1, 2)
+        gvl.addWidget(self.h, 1, 3)
+        for sp in (self.w, self.d, self.h):
+            sp.valueChanged.connect(self._stage)
         gvl.addWidget(self.cb_screen, 2, 0)
-        gvl.addWidget(QLabel("W"), 2, 1)
-        gvl.addWidget(self.sw, 2, 2)
-        hh = QHBoxLayout()
-        hh.addWidget(QLabel("H"))
-        hh.addWidget(self.sh)
-        gvl.addLayout(hh, 2, 3)
-        self.cb_rig = QCheckBox("Use the venue rigging (pipes + towers) instead of trusses along the fixture rows")
+        gvl.addWidget(self.sw, 2, 1)
+        gvl.addWidget(self.sh, 2, 2)
+        self.cb_rig = QCheckBox("Venue rigging (pipes + towers)")
+        self.cb_rig.setToolTip("Use the venue rigging instead of trusses along the fixture rows")
         self.cb_rig.toggled.connect(self._rig_toggled)
-        gvl.addWidget(self.cb_rig, 3, 0, 1, 4)
+        gvl.addWidget(self.cb_rig, 1, 4, 1, 2)
         self.cb_hidden = QCheckBox("Show hidden fixtures")
         self.cb_hidden.setToolTip("Hidden fixtures are not part of the rig (e.g. unpatched entries). "
                                   "They stay patched and are still output – only the stage view skips them.")
         self.cb_hidden.toggled.connect(lambda v: (setattr(self.view, "show_hidden", v), self.view.update()))
-        gvl.addWidget(self.cb_hidden, 4, 0, 1, 4)
-        lay.addWidget(gvn)
-
-        gt0 = QGroupBox("Rigging / truss model")
-        ht = QHBoxLayout(gt0)
+        gvl.addWidget(self.cb_hidden, 2, 4, 1, 2)
         self.truss = QComboBox()
         self.truss.currentIndexChanged.connect(self._truss_changed)
-        b_imp = QPushButton("Import truss model (OBJ)…")
+        b_imp = QPushButton("Import truss…")
+        b_imp.setToolTip("Import a truss model (OBJ / GLB / FBX)")
         b_imp.clicked.connect(self._import_truss)
-        ht.addWidget(self.truss, 1)
-        ht.addWidget(b_imp)
-        lay.addWidget(gt0)
+        gvl.addWidget(QLabel("Truss model"), 3, 0)
+        gvl.addWidget(self.truss, 3, 1, 1, 3)
+        gvl.addWidget(b_imp, 3, 4, 1, 2)
+        lay.addWidget(gvn)
 
-        gs = QGroupBox("Stage size")
-        fs = QHBoxLayout(gs)
-        self.w, self.d, self.h = _spin(2, 60), _spin(2, 60), _spin(2, 30)
-        for lab, sp in (("Width", self.w), ("Depth", self.d), ("Height", self.h)):
-            fs.addWidget(QLabel(lab))
-            fs.addWidget(sp)
-            sp.valueChanged.connect(self._stage)
-        lay.addWidget(gs)
-
-        gf = QGroupBox("Selected fixtures – position & aim")
-        ff = QFormLayout(gf)
+        # selected fixtures
+        gf = QGroupBox("Selected fixtures – position and aim")
+        ff = QGridLayout(gf)
+        ff.setVerticalSpacing(3)
         self.sel_label = QLabel("nothing selected")
-        ff.addRow(self.sel_label)
+        ff.addWidget(self.sel_label, 0, 0, 1, 6)
         self.x, self.y, self.z = _spin(-40, 40), _spin(-10, 60), _spin(0, 30)
         self.mount = QComboBox()
         self.mount.addItems(["hang", "floor"])
@@ -130,12 +132,12 @@ class StageEditor(QWidget):
         self.z.setToolTip("Height above the floor")
         self.rot.setToolTip("Which way the fixture faces: 0 = audience, 180 = upstage, ±90 = sideways")
         self.aim.setToolTip("Fixed fixtures: tilt from straight down (hanging) / straight up (floor)")
-        ff.addRow("X  (left/right)", self.x)
-        ff.addRow("Y  (front/back)", self.y)
-        ff.addRow("Z  (height)", self.z)
-        ff.addRow("Mount", self.mount)
-        ff.addRow("Facing (yaw)", self.rot)
-        ff.addRow("Tilt / aim", self.aim)
+        for c, (lab, w) in enumerate((("X", self.x), ("Y", self.y), ("Z", self.z))):
+            ff.addWidget(QLabel(lab), 1, 2 * c)
+            ff.addWidget(w, 1, 2 * c + 1)
+        for c, (lab, w) in enumerate((("Mount", self.mount), ("Yaw", self.rot), ("Tilt", self.aim))):
+            ff.addWidget(QLabel(lab), 2, 2 * c)
+            ff.addWidget(w, 2, 2 * c + 1)
         for w, attr in ((self.x, "x"), (self.y, "y"), (self.z, "z"), (self.rot, "rot"), (self.aim, "aim")):
             w.valueChanged.connect(lambda v, a=attr: self._set(a, v))
         self.mount.currentTextChanged.connect(lambda v: self._set("mount", v))
@@ -143,23 +145,24 @@ class StageEditor(QWidget):
 
         gt = QGroupBox("Align tools (selected fixtures)")
         gl = QGridLayout(gt)
+        gl.setSpacing(3)
         tools = [
-            ("Line up in a row", self.line_up, "Same Y and Z as the first selected fixture"),
-            ("Distribute along X", self.distribute, "Spread evenly between the leftmost and rightmost"),
+            ("Line up", self.line_up, "Same Y and Z as the first selected fixture"),
+            ("Distribute X", self.distribute, "Spread evenly between the leftmost and rightmost"),
             ("Same height", lambda: self._copy("z"), "Copy the height of the first selected fixture"),
-            ("Mirror left ↔ right", self.mirror, "Mirror X positions and facing around the centre"),
-            ("Centre on stage", self.centre, "Move the selection so it is centred left/right"),
+            ("Mirror ↔", self.mirror, "Mirror X positions and facing around the centre"),
+            ("Centre", self.centre, "Move the selection so it is centred left/right"),
             ("Turn 180°", self.turn, "Face the other way (audience ↔ upstage)"),
-            ("Auto layout (all)", self.auto, "Place every fixture from its group names"),
-            ("Hide selected", lambda: self._hide(True), "Do not draw the selected fixtures in the stage view"),
-            ("Unhide selected", lambda: self._hide(False), "Draw the selected fixtures again "
-                                                          "(tick 'Show hidden fixtures' to select them)"),
+            ("Hide", lambda: self._hide(True), "Do not draw the selected fixtures in the stage view"),
+            ("Unhide", lambda: self._hide(False), "Draw the selected fixtures again "
+                                                  "(tick 'Show hidden fixtures' to select them)"),
+            ("Auto layout", self.auto, "Place every fixture from its group names"),
         ]
         for i, (t, fn, tip) in enumerate(tools):
             b = QPushButton(t)
             b.setToolTip(tip)
             b.clicked.connect(fn)
-            gl.addWidget(b, i // 3, i % 3)
+            gl.addWidget(b, i // 5, i % 5)
         lay.addWidget(gt)
         lay.addStretch(1)
         self.refresh()
@@ -180,8 +183,8 @@ class StageEditor(QWidget):
         self._loading = True
         show = self.engine.show
         self._fill_truss()
-        self.venue_label.setText(f"Current: <b>{show.venue}</b> – {len(show.rigging)} rigging pieces"
-                                 if show.venue else "Current: automatic layout from the group names")
+        self.venue_label.setText(f"Layout: <b>{show.venue}</b> ({len(show.rigging)} rigging pieces)"
+                                 if show.venue else "Layout: automatic (from the group names)")
         self.cb_screen.setChecked(bool(show.screen))
         self.sw.setValue(show.screen.get("width", 10.0) if show.screen else 10.0)
         self.sh.setValue(show.screen.get("height", 3.8) if show.screen else 3.8)

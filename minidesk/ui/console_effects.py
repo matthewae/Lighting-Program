@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QBoxLayout, QComboBox, QDoubleSpinBox, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
+from PySide6.QtWidgets import (QBoxLayout, QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QInputDialog,
                                QLabel, QMessageBox, QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
 from .. import console_fx as C
@@ -18,12 +18,12 @@ from ..engine import Engine
 from ..model import Effect
 
 FX_BTN = ("QPushButton { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #6a64e8, stop:1 #3a2fb8);"
-          " border:1px solid #2a2390; color:white; font-size:8.5pt; padding:2px; }"
+          " border:1px solid #2a2390; color:white; font-size:8pt; padding:0px 2px; }"
           "QPushButton:hover { background:#7d78f0; }")
-LOADED_BTN = "QPushButton { background:#f3f3f6; color:#222; border:1px solid #9aa; font-size:8.5pt; }"
-LOADED_SEL = "QPushButton { background:#f07ad8; color:#111; border:1px solid #c04aa8; font-size:8.5pt; font-weight:600; }"
-USER_BTN = "QPushButton { background:#eef0e6; color:#333; border:1px solid #9a9; font-size:8.5pt; }"
-USER_SET = "QPushButton { background:#2f7a3c; color:white; border:1px solid #4caf62; font-size:8.5pt; }"
+LOADED_BTN = "QPushButton { background:#f3f3f6; color:#222; border:1px solid #9aa; font-size:8pt; }"
+LOADED_SEL = "QPushButton { background:#f07ad8; color:#111; border:1px solid #c04aa8; font-size:8pt; font-weight:600; }"
+USER_BTN = "QPushButton { background:#eef0e6; color:#333; border:1px solid #9a9; font-size:8pt; }"
+USER_SET = "QPushButton { background:#2f7a3c; color:white; border:1px solid #4caf62; font-size:8pt; }"
 PER_PAGE = 20
 LOADED_PER_PAGE = 5
 CAT_LABEL = {"Intensity": "Intensity Effects", "Position": "Position Effects", "Color": "Color Effects",
@@ -31,21 +31,52 @@ CAT_LABEL = {"Intensity": "Intensity Effects", "Position": "Position Effects", "
 
 
 def _encoder(title: str, lo: float, hi: float, step: float, suffix: str, dec: int = 0):
-    box = QGroupBox(title)
-    lay = QVBoxLayout(box)
+    """Compact encoder: title, spin box and slider in one row."""
+    w = QWidget()
+    lay = QHBoxLayout(w)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(3)
+    lb = QLabel(title)
+    lb.setStyleSheet("background:#000; color:white; font-weight:600; padding:2px 6px; border-radius:3px;")
     sp = QDoubleSpinBox()
     sp.setRange(lo, hi)
     sp.setSingleStep(step)
     sp.setDecimals(dec)
     sp.setSuffix(suffix)
     sp.setKeyboardTracking(False)
+    sp.setMinimumWidth(78)
     sl = QSlider(Qt.Horizontal)
     sl.setRange(int(lo * 10), int(hi * 10))
     sl.valueChanged.connect(lambda v: sp.setValue(v / 10))
     sp.valueChanged.connect(lambda v: (sl.blockSignals(True), sl.setValue(int(v * 10)), sl.blockSignals(False)))
+    lay.addWidget(lb)
     lay.addWidget(sp)
-    lay.addWidget(sl)
-    return box, sp
+    lay.addWidget(sl, 1)
+    return w, sp
+
+
+def _small(text: str, fn, tip: str = "") -> QPushButton:
+    b = QPushButton(text)
+    b.setFixedHeight(26)
+    b.setStyleSheet("padding:1px 6px;")
+    if tip:
+        b.setToolTip(tip)
+    b.clicked.connect(fn)
+    return b
+
+
+def _bar(text: str) -> QLabel:
+    lb = QLabel(text)
+    lb.setObjectName("bar")
+    lb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    return lb
+
+
+def _regrid(grid: QGridLayout, widgets: list, cols: int) -> None:
+    for w in widgets:
+        grid.removeWidget(w)
+    for i, w in enumerate(widgets):
+        grid.addWidget(w, i // cols, i % cols)
 
 
 class ConsoleEffectSelect(QWidget):
@@ -62,149 +93,145 @@ class ConsoleEffectSelect(QWidget):
         self.loaded_page = 0
         self.current: Effect | None = None
         self.user_sel = 0
+        self._wide = None
         root = QBoxLayout(QBoxLayout.LeftToRight, self)
-        root.setContentsMargins(4, 4, 4, 4)
+        root.setContentsMargins(4, 2, 4, 2)
+        root.setSpacing(6)
         self._root = root
         left = QVBoxLayout()
-        root.addLayout(left, 3)
+        left.setSpacing(3)
+        root.addLayout(left, 4)
 
+        # header: category, page, UP / DOWN, selection
         head = QHBoxLayout()
         t = QLabel("Effect Select")
         t.setObjectName("title")
         head.addWidget(t)
+        self.cat_box = QComboBox()
+        for c in ("Intensity", "Position", "Color", "Beam", "All"):
+            self.cat_box.addItem(CAT_LABEL[c], c)
+        self.cat_box.setCurrentIndex(1)
+        self.cat_box.setStyleSheet("QComboBox { background:#8a2fb0; color:white; font-weight:600; }")
+        self.cat_box.currentIndexChanged.connect(self._cat)
+        head.addWidget(self.cat_box)
         self.page_lbl = QLabel()
-        head.addWidget(self.page_lbl)
-        head.addStretch(1)
-        self.sel_lbl = QLabel()
-        self.sel_lbl.setStyleSheet("color:#9aa0b3;")
-        head.addWidget(self.sel_lbl)
+        self.page_lbl.setStyleSheet("color:#9aa0b3;")
+        head.addWidget(self.page_lbl, 1)
+        head.addWidget(_small("UP", lambda: self._page(-1), "Previous page"))
+        head.addWidget(_small("DOWN", lambda: self._page(1), "Next page"))
         left.addLayout(head)
 
         self.grid = QGridLayout()
-        self.grid.setSpacing(3)
+        self.grid.setSpacing(2)
         self.fx_buttons = []
         for i in range(PER_PAGE):
             b = QPushButton()
-            b.setMinimumHeight(44)
-            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            b.setFixedHeight(28)
+            b.setMinimumWidth(40)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.setStyleSheet(FX_BTN)
             b.clicked.connect(lambda _=False, k=i: self._pick(k))
             self.grid.addWidget(b, i // 5, i % 5)
             self.fx_buttons.append(b)
         left.addLayout(self.grid)
 
-        nav = QHBoxLayout()
-        b_open = QPushButton("Fixture\nOpen/Full")
-        b_open.setToolTip("Selected fixtures: intensity full and shutter open")
-        b_open.clicked.connect(self._open_full)
-        nav.addWidget(b_open)
-        self.cat_box = QComboBox()
-        for c in ("Intensity", "Position", "Color", "Beam", "All"):
-            self.cat_box.addItem(CAT_LABEL[c], c)
-        self.cat_box.setCurrentIndex(1)
-        self.cat_box.setStyleSheet("QComboBox { background:#b23ad0; color:white; font-weight:600; min-height:32px; }")
-        self.cat_box.currentIndexChanged.connect(self._cat)
-        nav.addWidget(self.cat_box, 2)
-        b_up, b_dn = QPushButton("UP"), QPushButton("DOWN")
-        b_up.clicked.connect(lambda: self._page(-1))
-        b_dn.clicked.connect(lambda: self._page(1))
-        nav.addWidget(b_up)
-        nav.addWidget(b_dn)
-        left.addLayout(nav)
-
-        lt = QLabel("Current Loaded Effects")
-        lt.setStyleSheet("background:#2448c8; color:white; padding:3px 8px; border-radius:4px;")
-        lt.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        left.addWidget(lt)
-        lg = QGridLayout()
-        lg.setSpacing(3)
+        # current loaded effects
+        lrow = QHBoxLayout()
+        self.loaded_lbl = _bar("Current Loaded Effects")
+        lrow.addWidget(self.loaded_lbl, 1)
+        self.sel_lbl = QLabel()
+        self.sel_lbl.setStyleSheet("color:#9aa0b3;")
+        lrow.addWidget(self.sel_lbl)
+        lrow.addWidget(_small("◀", lambda: self._loaded_page(-1), "Page up"))
+        lrow.addWidget(_small("▶", lambda: self._loaded_page(1), "Page down"))
+        left.addLayout(lrow)
+        lg = QHBoxLayout()
+        lg.setSpacing(2)
         self.loaded_buttons = []
         for i in range(LOADED_PER_PAGE):
             b = QPushButton()
-            b.setMinimumHeight(40)
+            b.setFixedHeight(30)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.setStyleSheet(LOADED_BTN)
             b.clicked.connect(lambda _=False, k=i: self._select_loaded(k))
-            lg.addWidget(b, 0, i)
+            lg.addWidget(b)
             self.loaded_buttons.append(b)
-        b_man = QPushButton("Manual\nEffects")
-        b_man.setToolTip("Open the free effect editor (all parameters, colours, wings, blocks…)")
-        b_man.clicked.connect(self.manualRequested.emit)
-        lg.addWidget(b_man, 1, 1)
-        b_pu, b_pd = QPushButton("Page Up"), QPushButton("Page Down")
-        b_pu.clicked.connect(lambda: self._loaded_page(-1))
-        b_pd.clicked.connect(lambda: self._loaded_page(1))
-        lg.addWidget(b_pu, 1, 3)
-        lg.addWidget(b_pd, 1, 4)
-        self.attr_lbl = QLabel("Effect\nAttribute")
-        self.attr_lbl.setAlignment(Qt.AlignCenter)
-        self.attr_lbl.setStyleSheet("background:#1b3fd0; color:white; border-radius:4px; padding:4px;")
-        lg.addWidget(self.attr_lbl, 2, 0, 2, 1)
-        self.b_dir = QPushButton("Direction\n---->")
-        self.b_dir.setToolTip("Direction of the phase through the fixtures")
-        self.b_dir.clicked.connect(self._direction)
-        lg.addWidget(self.b_dir, 2, 1)
-        self.b_mode = QPushButton("Effect Mode\n=Absolute")
-        self.b_mode.setToolTip("Absolute: around the effect centre / full range\n"
-                               "Rel(Center): around the fixture's current value")
-        self.b_mode.clicked.connect(self._mode)
-        lg.addWidget(self.b_mode, 2, 2)
-        self.order = QComboBox()
-        for k, v in C.ORDERS.items():
-            self.order.addItem(f"Fixture Order: {v}", k)
-        self.order.currentIndexChanged.connect(self._order)
-        lg.addWidget(self.order, 2, 3)
-        b_del = QPushButton("Delete\nEffect")
-        b_del.setObjectName("danger")
-        b_del.clicked.connect(self._delete)
-        b_dall = QPushButton("Delete All\nEffects")
-        b_dall.setObjectName("danger")
-        b_dall.clicked.connect(self._delete_all)
-        lg.addWidget(b_del, 3, 3)
-        lg.addWidget(b_dall, 3, 4)
-        b_store = QPushButton("Store…")
-        b_store.setObjectName("go")
-        b_store.setToolTip("Store the programmer (values + loaded effects) into a cue")
-        b_store.clicked.connect(self.storeRequested.emit)
-        lg.addWidget(b_store, 2, 4)
         left.addLayout(lg)
 
+        # effect options
+        opt = QHBoxLayout()
+        opt.setSpacing(3)
+        self.attr_lbl = QLabel("")
+        self.attr_lbl.setStyleSheet("background:#1b3fd0; color:white; border-radius:4px; padding:3px 6px;")
+        opt.addWidget(self.attr_lbl)
+        self.b_dir = _small("Direction --->", self._direction, "Direction of the phase through the fixtures")
+        opt.addWidget(self.b_dir)
+        self.b_mode = _small("Mode =Absolute", self._mode, "Absolute: around the effect centre / full range\n"
+                             "Rel(Center): around the fixture's current value")
+        opt.addWidget(self.b_mode)
+        self.order = QComboBox()
+        for k, v in C.ORDERS.items():
+            self.order.addItem(f"Order: {v}", k)
+        self.order.setToolTip("Fixture Order")
+        self.order.currentIndexChanged.connect(self._order)
+        opt.addWidget(self.order, 1)
+        left.addLayout(opt)
         enc = QHBoxLayout()
-        bx, self.size = _encoder("Effect Size", 0, 100, 5, " %")
-        enc.addWidget(bx)
-        bx, self.speed = _encoder("Effect Speed", 0.5, 300, 0.5, " BPM", 1)
-        enc.addWidget(bx)
-        bx, self.spread = _encoder("Effect Spread", 0, 360, 15, " °")
-        enc.addWidget(bx)
+        enc.setSpacing(6)
+        w, self.size = _encoder("Size", 0, 100, 5, " %")
+        enc.addWidget(w, 1)
+        w, self.speed = _encoder("Speed", 0.5, 300, 0.5, " BPM", 1)
+        enc.addWidget(w, 1)
+        w, self.spread = _encoder("Spread", 0, 360, 15, " °")
+        enc.addWidget(w, 1)
         self.size.valueChanged.connect(self._param)
         self.speed.valueChanged.connect(self._param)
         self.spread.valueChanged.connect(self._param)
         left.addLayout(enc)
+        act = QHBoxLayout()
+        act.setSpacing(3)
+        act.addWidget(_small("Fixture Open/Full", self._open_full, "Selected fixtures: intensity full, shutter open"))
+        act.addWidget(_small("Manual Effects…", self.manualRequested.emit,
+                             "Free effect editor (all parameters, colours, wings, blocks…)"))
+        b_del = _small("Delete Effect", self._delete)
+        b_del.setObjectName("danger")
+        b_dall = _small("Delete All Effects", self._delete_all)
+        b_dall.setObjectName("danger")
+        act.addWidget(b_del)
+        act.addWidget(b_dall)
+        act.addStretch(1)
+        b_store = _small("Store…", self.storeRequested.emit, "Store the programmer (values + effects) into a cue")
+        b_store.setObjectName("go")
+        act.addWidget(b_store)
+        left.addLayout(act)
+        left.addStretch(1)
 
         # ---- user effects
         right = QVBoxLayout()
+        right.setSpacing(3)
         root.addLayout(right, 1)
-        ut = QLabel("User Effects")
-        ut.setStyleSheet("background:#2448c8; color:white; padding:3px 8px; border-radius:4px;")
-        ut.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        right.addWidget(ut)
-        ug = QGridLayout()
-        ug.setSpacing(3)
+        right.addWidget(_bar("User Effects"))
+        self.u_grid = QGridLayout()
+        self.u_grid.setSpacing(2)
         self.user_buttons = []
         for i in range(20):
             b = QPushButton(str(i + 1))
-            b.setMinimumHeight(30)
+            b.setFixedHeight(22)
+            b.setMinimumWidth(30)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.setStyleSheet(USER_BTN)
             b.clicked.connect(lambda _=False, k=i: self._user(k))
-            ug.addWidget(b, i // 2, i % 2)
             self.user_buttons.append(b)
-        right.addLayout(ug)
-        for text, fn in (("Save Running\nEffects", self._user_save), ("Edit Label", self._user_label),
-                         ("Delete User\nEffect", self._user_delete), ("Delete All\nUser Effects", self._user_clear)):
-            b = QPushButton(text)
-            b.clicked.connect(fn)
-            right.addWidget(b)
+        right.addLayout(self.u_grid)
+        ub = QHBoxLayout()
+        ub.setSpacing(3)
+        for text, fn in (("Save Running", self._user_save), ("Label", self._user_label),
+                         ("Delete", self._user_delete), ("Delete All", self._user_clear)):
+            ub.addWidget(_small(text, fn))
+        right.addLayout(ub)
         right.addStretch(1)
         self._loading = False
+        self._relayout()
         self.refresh()
 
     # --------------------------------------------------------------- library
@@ -366,12 +393,12 @@ class ConsoleEffectSelect(QWidget):
         ents = self._entries()
         pages = max(1, (len(ents) + PER_PAGE - 1) // PER_PAGE)
         self.page = min(self.page, pages - 1)
-        self.page_lbl.setText(f"Effects - {self.page + 1}  ({pages} pages, {len(ents)} effects)")
+        self.page_lbl.setText(f"  Effects - {self.page + 1} / {pages}   ({len(ents)} effects)")
         for k, b in enumerate(self.fx_buttons):
             i = self.page * PER_PAGE + k
             if i < len(ents):
                 cat, no, name = ents[i]
-                b.setText(f"{no}\n{name}" if self.cat != "All" else f"{C.LETTER[cat]}{no}\n{name}")
+                b.setText(f"{no}  {name}" if self.cat != "All" else f"{C.LETTER[cat]}{no}  {name}")
                 kw = C.spec(cat, name)
                 b.setToolTip(f"{cat} {no}: {name}\n" + ", ".join(f"{k2}={v}" for k2, v in kw.items()))
                 b.setEnabled(True)
@@ -389,7 +416,7 @@ class ConsoleEffectSelect(QWidget):
             i = self.loaded_page * LOADED_PER_PAGE + k
             if i < len(effs):
                 e = effs[i]
-                b.setText(f"{len(e.fixtures)}  {C.letter(e)}\n{e.label or e.type}")
+                b.setText(f"{len(e.fixtures)} {C.letter(e)}  {e.label or e.type}")
                 b.setStyleSheet(LOADED_SEL if e is self.current else LOADED_BTN)
                 b.setEnabled(True)
             else:
@@ -403,16 +430,16 @@ class ConsoleEffectSelect(QWidget):
             self.size.setValue(C.size_pct(e))
             self.speed.setValue(C.bpm(e))
             self.spread.setValue(C.spread_deg(e))
-            self.b_dir.setText("Direction\n<----" if e.reverse else "Direction\n---->")
+            self.b_dir.setText("Direction <---" if e.reverse else "Direction --->")
             cat = C.category_of(e)
             mode = e.mode or ("rel" if cat == "Position" else "abs")
-            self.b_mode.setText("Effect Mode\n=Rel(Center)" if mode == "rel" else "Effect Mode\n=Absolute")
+            self.b_mode.setText("Mode =Rel(Center)" if mode == "rel" else "Mode =Absolute")
             i = self.order.findData(e.order)
             self.order.setCurrentIndex(max(0, i))
-            self.attr_lbl.setText(f"Effect\n{e.attribute or cat}")
+            self.attr_lbl.setText(f"{C.letter(e)}  {e.label or e.type}  ({e.attribute or cat})")
         for k, b in enumerate(self.user_buttons):
             u = self._user_entry(k)
-            b.setText(f"{k + 1}  {u.get('name', '')[:12]}" if u else str(k + 1))
+            b.setText(f"{k + 1} {u.get('name', '')[:10]}" if u else str(k + 1))
             st = USER_SET if u else USER_BTN
             if k == self.user_sel:
                 st = st.replace("}", " border:2px solid #f5b331; }", 1)
@@ -421,6 +448,12 @@ class ConsoleEffectSelect(QWidget):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        want = QBoxLayout.TopToBottom if self.width() < 1060 else QBoxLayout.LeftToRight
-        if self._root.direction() != want:
-            self._root.setDirection(want)
+        self._relayout()
+
+    def _relayout(self):
+        wide = self.width() >= 1000
+        if wide == self._wide:
+            return
+        self._wide = wide
+        self._root.setDirection(QBoxLayout.LeftToRight if wide else QBoxLayout.TopToBottom)
+        _regrid(self.u_grid, self.user_buttons, 2 if wide else 10)

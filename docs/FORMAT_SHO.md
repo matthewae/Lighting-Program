@@ -85,6 +85,10 @@ u16 0xFFFE                 end of fixture entry
 ...                        next fixture entry, or 0xFFFF = end of step
 ```
 
+One cue is stored as several *segments*, one per fixture group (e.g. PARs, strobes, beams),
+each ended by `0xFFFF`. Segments belong to the same cue / step until a fixture appears a
+second time; only then a new chase step starts (e.g. F11/11: strobes 27/28 alternating).
+
 The code is mapped to a channel through the library slot table. Values above 255 are
 16 bit (coarse/fine) for slots that have a fine channel.
 

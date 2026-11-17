@@ -5,7 +5,7 @@ import copy
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-                               QDoubleSpinBox, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
+                               QDoubleSpinBox, QGridLayout, QHBoxLayout, QHeaderView,
                                QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -42,6 +42,7 @@ class StepValuesDialog(QDialog):
                 if c < 2:
                     it.setFlags(it.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(r, c, it)
+        self.table.setMinimumHeight(72)
         lay.addWidget(self.table, 1)
         h = QHBoxLayout()
         bdel = QPushButton("Delete row(s)")
@@ -126,19 +127,32 @@ class CueEditor(QWidget):
         tr.addWidget(b_par)
         lay.addLayout(tr)
 
-        g = QGroupBox("Playback options")
+        self.opt_btn = QPushButton("▾ Playback options")
+        self.opt_btn.setCheckable(True)
+        self.opt_btn.setChecked(True)
+        self.opt_btn.setFixedHeight(22)
+        self.opt_btn.setStyleSheet("text-align:left; padding:1px 8px;")
+        self.opt_btn.toggled.connect(self._toggle_options)
+        self._opt_user = False
+        lay.addWidget(self.opt_btn)
+        g = QWidget()
+        self.opt_box = g
         grid = QGridLayout(g)
+        grid.setContentsMargins(4, 0, 4, 0)
         self.e_name = QLineEdit()
         self.e_name.setMaxLength(16)
+        self.e_name.setMaximumWidth(150)
         self.e_name.editingFinished.connect(self._props)
         self.e_mode = QComboBox()
-        self.e_mode.addItem("Chase (runs by itself)", "chase")
-        self.e_mode.addItem("Cue list (GO for each cue)", "cuelist")
+        self.e_mode.addItem("Chase", "chase")
+        self.e_mode.addItem("Cue list", "cuelist")
+        self.e_mode.setToolTip("Chase: the steps run by themselves.  Cue list: GO for each cue.")
         self.e_mode.currentIndexChanged.connect(self._props)
         self.e_dir = QComboBox()
         self.e_dir.addItems(PB_DIRECTIONS)
         self.e_dir.currentTextChanged.connect(self._props)
-        self.e_loop = QCheckBox("Loop at the end")
+        self.e_loop = QCheckBox("Loop")
+        self.e_loop.setToolTip("Loop at the end")
         self.e_loop.toggled.connect(self._props)
         self.e_speed = QDoubleSpinBox()
         self.e_speed.setRange(0.02, 600)
@@ -165,16 +179,14 @@ class CueEditor(QWidget):
         self.e_release.setToolTip("Fade out time when the playback is stopped with ■")
         self.e_release.valueChanged.connect(self._props)
         self.e_num = QLabel("")
-        rows = [("Name", self.e_name, "Mode", self.e_mode),
-                ("Direction", self.e_dir, "", self.e_loop),
-                ("Chase speed", self.e_speed, "", self._hbox(self.b_tap, self.bpm)),
-                ("Default fade", self.e_fade, "Chase crossfade", self.e_xfade),
-                ("Release (stop fade)", self.e_release, "Origin", self.e_num)]
-        for r, (l1, w1, l2, w2) in enumerate(rows):
-            grid.addWidget(QLabel(l1), r, 0)
-            grid.addWidget(w1, r, 1)
-            grid.addWidget(QLabel(l2), r, 2)
-            grid.addWidget(w2, r, 3)
+        rows = [(("Name", self.e_name), ("Mode", self.e_mode), ("Direction", self._hbox(self.e_dir, self.e_loop))),
+                (("Speed", self.e_speed), ("", self._hbox(self.b_tap, self.bpm)), ("Default fade", self.e_fade)),
+                (("Crossfade", self.e_xfade), ("Release", self.e_release), ("Origin", self.e_num))]
+        grid.setVerticalSpacing(3)
+        for r, row in enumerate(rows):
+            for c, (label, w) in enumerate(row):
+                grid.addWidget(QLabel(label), r, 2 * c)
+                grid.addWidget(w, r, 2 * c + 1)
         lay.addWidget(g)
 
         self.table = QTableWidget(0, len(self.COLS))
@@ -203,6 +215,8 @@ class CueEditor(QWidget):
                 ("Duplicate", self._duplicate, "Copy the selected cue(s)")):
             btn = QPushButton(text)
             btn.setToolTip(tip)
+            btn.setFixedHeight(24)
+            btn.setStyleSheet("padding:1px 6px;")
             btn.clicked.connect(fn)
             b.addWidget(btn)
         lay.addLayout(b)
@@ -211,6 +225,8 @@ class CueEditor(QWidget):
                          ("Copy", self._copy), ("Paste", self._paste), ("Delete cue", self._delete),
                          ("Merge cues → 1 scene", self._merge)):
             btn = QPushButton(text)
+            btn.setFixedHeight(24)
+            btn.setStyleSheet("padding:1px 6px;")
             btn.clicked.connect(fn)
             b2.addWidget(btn)
         b2.addStretch(1)
@@ -226,6 +242,23 @@ class CueEditor(QWidget):
         self.timer.timeout.connect(self._highlight_current)
         self.timer.start(200)
         self._enable(False)
+
+    def _toggle_options(self, on: bool, user: bool = True) -> None:
+        self.opt_box.setVisible(on)
+        self.opt_btn.setText(("▾ " if on else "▸ ") + "Playback options")
+        if user and self.opt_btn.isVisible():
+            self._opt_user = True
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        vp = self.parentWidget()
+        if not self._opt_user and vp is not None:     # short screens: fold the options away
+            want = vp.height() >= 470
+            if want != self.opt_btn.isChecked():
+                self.opt_btn.blockSignals(True)
+                self.opt_btn.setChecked(want)
+                self.opt_btn.blockSignals(False)
+                self._toggle_options(want, user=False)
 
     @staticmethod
     def _hbox(*ws):
@@ -257,7 +290,8 @@ class CueEditor(QWidget):
             self.e_fade.setValue(pb.fade)
             self.e_xfade.setValue(pb.xfade)
             self.e_release.setValue(pb.release)
-            self.e_num.setText(f"{pb.bank}  {pb.source}")
+            self.e_num.setText(pb.console_label)
+            self.e_num.setToolTip(f"{pb.bank}  {pb.source}")
             self.bpm.setText(f"{60 / max(pb.speed, 0.01):.0f} BPM")
         else:
             self.title.setText("No playback selected – click a playback name in the fader bar")

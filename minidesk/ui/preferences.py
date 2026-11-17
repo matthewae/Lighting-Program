@@ -6,7 +6,10 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QFormLayout, QGroupBox, QLabel, QPushButton, QSpinBox, QVBoxLayout)
 
 DEFAULTS = {"splash": True, "welcome": True, "per_page": 15, "default_fade": 0.0, "haze": 35,
-            "models": True, "labels": True, "autosave_min": 0, "confirm_exit": True}
+            "models": True, "labels": True, "autosave_min": 0, "confirm_exit": True, "ui_scale": "0.9"}
+
+UI_SCALES = [("0.8", "Very compact (80 %)"), ("0.9", "Compact (90 %) – recommended for laptops"),
+             ("1.0", "Normal (100 %)"), ("1.15", "Large (115 %)")]
 
 
 def get(settings: QSettings, key: str):
@@ -29,6 +32,12 @@ class PreferencesDialog(QDialog):
         self.welcome.setChecked(get(settings, "welcome"))
         f.addRow(self.splash)
         f.addRow(self.welcome)
+        self.ui_scale = QComboBox()
+        for k, label in UI_SCALES:
+            self.ui_scale.addItem(label, k)
+        self.ui_scale.setCurrentIndex(max(0, self.ui_scale.findData(get(settings, "ui_scale"))))
+        self.ui_scale.setToolTip("Size of the whole interface (buttons, text). Applied at the next start.")
+        f.addRow("Interface size", self.ui_scale)
         lay.addWidget(g)
         g2 = QGroupBox("Playback / programming")
         f2 = QFormLayout(g2)
@@ -94,3 +103,4 @@ class PreferencesDialog(QDialog):
         s.setValue("models", self.models.isChecked())
         s.setValue("labels", self.labels.isChecked())
         s.setValue("confirm_exit", self.confirm.isChecked())
+        s.setValue("ui_scale", self.ui_scale.currentData())

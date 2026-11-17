@@ -134,13 +134,15 @@ class FixtureSheet(QWidget):
                 w.deleteLater()
         for i, g in enumerate(self.engine.show.groups):
             num = g.slot + 1 if g.slot >= 0 else i + 1
-            b = QPushButton(f"{num}  {g.name}\n({len(g.fixtures)})")
-            b.setMinimumHeight(40)
+            b = QPushButton(f"{num}  {g.name}  ({len(g.fixtures)})")
+            b.setFixedHeight(26)
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)     # never wider than the page
+            b.setStyleSheet("padding:1px 3px; font-size:8pt;")
             b.setToolTip("Click: select   Ctrl+click: add   Right-click: rename / update / delete")
             b.clicked.connect(lambda _=False, grp=g: self.select_group(grp))
             b.setContextMenuPolicy(Qt.CustomContextMenu)
             b.customContextMenuRequested.connect(lambda pos, grp=g, btn=b: self._group_menu(grp, btn, pos))
-            self.group_lay.addWidget(b, i // 6, i % 6)
+            self.group_lay.addWidget(b, i // 5, i % 5)
         self.grid.relayout()
         self.grid.update()
 

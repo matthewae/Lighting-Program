@@ -3,9 +3,14 @@ import sys
 
 
 def main() -> int:
+    import os
     from PySide6.QtCore import QSettings
     from PySide6.QtWidgets import QApplication
 
+    # interface size (Preferences → Interface size); an explicit QT_SCALE_FACTOR wins
+    scale = str(QSettings("MiniDesk", "MiniDesk").value("ui_scale", "0.9"))
+    if "QT_SCALE_FACTOR" not in os.environ and scale not in ("", "1", "1.0"):
+        os.environ["QT_SCALE_FACTOR"] = scale
     app = QApplication(sys.argv)
     app.setApplicationName("MiniDesk")
     app.setOrganizationName("MiniDesk")

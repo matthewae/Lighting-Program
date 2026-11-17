@@ -17,16 +17,17 @@ class ExecutorStrip(QWidget):
         super().__init__(parent)
         self.engine = engine
         self.st: PlaybackState | None = None
-        self.setFixedWidth(84)
+        self.setFixedWidth(76)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(2, 2, 2, 2)
-        lay.setSpacing(2)
+        lay.setContentsMargins(1, 1, 1, 1)
+        lay.setSpacing(1)
         self.num = QLabel("")
+        self.num.setStyleSheet("font-size:8pt; color:#9aa0b3;")
         self.num.setAlignment(Qt.AlignCenter)
         self.name = QPushButton("—")
         self.name.setToolTip("Click to edit this playback in the Cues tab")
         self.name.setStyleSheet("text-align:center; font-size:8pt;")
-        self.name.setMinimumHeight(30)
+        self.name.setMinimumHeight(24)
         self.name.clicked.connect(lambda: self.st and self.selected.emit(self.st))
         self.name.setContextMenuPolicy(Qt.CustomContextMenu)
         self.name.customContextMenuRequested.connect(self._menu)
@@ -40,7 +41,7 @@ class ExecutorStrip(QWidget):
         self.prog.setObjectName("stepbar")
         self.slider = QSlider(Qt.Vertical)
         self.slider.setRange(0, 100)
-        self.slider.setMinimumHeight(60)
+        self.slider.setMinimumHeight(34)
         self.slider.valueChanged.connect(self._level)
         self.lvl = QLabel("0%")
         self.lvl.setAlignment(Qt.AlignCenter)
@@ -55,11 +56,12 @@ class ExecutorStrip(QWidget):
         self.b_stop = QPushButton("■")
         row2.addWidget(self.b_pause)
         row2.addWidget(self.b_stop)
-        self.b_flash = QPushButton("Flash")
+        self.b_flash = QPushButton("F")
+        self.b_flash.setToolTip("Flash (hold)")
         self.b_flash.setObjectName("flash")
         for b in (self.b_back, self.b_go, self.b_pause, self.b_stop, self.b_flash):
-            b.setFixedHeight(26)
-            b.setStyleSheet("padding: 2px 4px;")
+            b.setFixedHeight(22)
+            b.setStyleSheet("padding: 1px 3px;")
         self.b_go.clicked.connect(self._go)
         self.b_back.clicked.connect(lambda: self.st and self.engine.back(self.st))
         self.b_pause.clicked.connect(lambda: self.st and self.engine.pause(self.st))
@@ -69,10 +71,10 @@ class ExecutorStrip(QWidget):
         for w in (self.num, self.name, self.step, self.prog):
             lay.addWidget(w)
         lay.addWidget(self.slider, 1, Qt.AlignHCenter)
-        lay.addWidget(self.lvl)
+        self.lvl.hide()                     # level is shown in the step line (keeps the strip short)
         lay.addLayout(row1)
+        row2.addWidget(self.b_flash)
         lay.addLayout(row2)
-        lay.addWidget(self.b_flash)
 
     def _go(self):
         if self.st:
@@ -129,7 +131,7 @@ class ExecutorStrip(QWidget):
         self.name.setText(nm if len(nm) <= 10 else nm[:9] + "…")
         n = len(st.pb.steps)
         if st.running:
-            self.step.setText(f"{'❚❚ ' if st.paused else '▶ '}{st.index + 1}/{n}")
+            self.step.setText(f"{'❚❚ ' if st.paused else '▶ '}{st.index + 1}/{n}  {round(st.level * 100)}%")
             self.name.setStyleSheet("text-align:center; font-size:8pt; background:#1f4d2e; border-color:#3fbf6a;")
             self.prog.setValue(int(self.engine.step_progress(st) * 1000))
         else:
@@ -151,7 +153,7 @@ class FixedKey(QPushButton):
         super().__init__()
         self.engine, self.bar, self.pos = engine, bar, pos
         self.st: PlaybackState | None = None
-        self.setMinimumSize(96, 46)
+        self.setMinimumSize(90, 40)
         self.setCheckable(False)
         self.clicked.connect(self._toggle)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -243,6 +245,8 @@ class ExecutorBar(QWidget):
         b_rel.setObjectName("danger")
         b_rel.clicked.connect(self._release_all)
         side.addWidget(b_rel)
+        side.addStretch(1)
+        side.setSpacing(2)
         lay.addLayout(side)
         side = QVBoxLayout()
         t2 = QLabel("Master")

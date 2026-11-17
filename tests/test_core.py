@@ -736,3 +736,17 @@ def test_run_mode_manual_and_use_times():
     pb.steps[1].fade = 5.0
     e.go(st)
     assert e.tick(0.05)[0][0] == 200          # delay / fade times ignored -> snap
+
+
+def test_cue_segments_merge_into_one_step(imported):
+    """A console cue is stored as one segment per fixture group; they run together (one step)."""
+    show, _ = imported
+    by = {p.console_label: p for p in show.playbacks}
+    amb = by["F1/1"]                                   # Ambience: PAR + beam + strobe in ONE cue
+    assert len(amb.steps) == 1
+    fids = set(amb.steps[0].values)
+    assert {1, 19, 27} <= fids
+    assert len(by["P1/5"].steps) == 1 and {1, 22} <= set(by["P1/5"].steps[0].values)
+    # a real chase (same fixtures again with other values) keeps its steps
+    alt = by["F11/11"]
+    assert len(alt.steps) == 2 and set(alt.steps[0].values) == set(alt.steps[1].values)

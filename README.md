@@ -90,6 +90,15 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
     disembunyikan dari visualizer saja; patch di console **tidak** diubah. Centang
     *Show hidden fixtures* untuk melihatnya lagi.
 
+- **Tampilan ringkas, tanpa overflow** – semua tab muat tanpa scroll (diuji pada layar 1366 × 768):
+  - *Settings → Interface size*: Very compact 80 % / **Compact 90 % (default)** / Normal / Large
+    (berlaku setelah aplikasi dibuka ulang).
+  - *Layout* di toolbar / menu View: **F8** stage + panel, **F9** panel saja (programming),
+    **F10** stage saja, **F11** tampilkan / sembunyikan fader playback.
+  - Halaman Live / Effect Select / Stage / Cues otomatis menata ulang kolom sesuai lebar panel.
+- **Cue = satu scene**: console menyimpan satu cue sebagai beberapa segmen (PAR, strobe, beam …);
+  semuanya sekarang menyala bersamaan dalam satu cue. Step chase baru dimulai hanya kalau fixture
+  yang sama muncul lagi (chase sungguhan, mis. strobe bergantian).
 - **Fitur console CODE MINI 1000T (tab *Live*, *Effects*, *Cues*)**:
   - **LIVE SHOW**: Fixtures 20 per halaman (UP/DOWN), Groups 15 per halaman sesuai slot console
     (slot kosong tetap kosong, mis. grup 11), Presets 2 × 10, *Fixture Open/Full*, *Fixture Align*

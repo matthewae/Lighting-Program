@@ -312,7 +312,24 @@ class ShoReader:
         scan(range(first + 1, first + max(obj_blocks, 1)))
         if not steps:   # small objects sometimes keep their data right after the header run
             scan(range(first + max(obj_blocks, 1), min(last, first + obj_blocks + 3) + 1), only_first=True)
-        return times, steps
+        return times, merge_segments(steps)
+
+
+def merge_segments(segments: list) -> list:
+    """The console stores one cue as several segments (one per fixture group / type: PARs,
+    strobes, beams ...). Segments belong to the same step until a fixture appears again –
+    only then a new step (chase step) starts."""
+    steps, cur, seen = [], [], set()
+    for seg in segments:
+        fx = {e[0] for e in seg}
+        if cur and fx & seen:
+            steps.append(cur)
+            cur, seen = [], set()
+        cur = cur + list(seg)
+        seen |= fx
+    if cur:
+        steps.append(cur)
+    return steps
 
 
 # ---------------------------------------------------------------------------

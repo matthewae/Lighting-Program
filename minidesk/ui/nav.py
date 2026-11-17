@@ -20,9 +20,9 @@ class NavTabs(QWidget):
         self.list.setViewMode(QListView.IconMode)
         self.list.setFlow(QListView.TopToBottom)
         self.list.setMovement(QListView.Static)
-        self.list.setIconSize(QSize(24, 24))
-        self.list.setGridSize(QSize(96, 64))
-        self.list.setFixedWidth(102)
+        self.list.setIconSize(QSize(20, 20))
+        self.list.setGridSize(QSize(80, 52))
+        self.list.setFixedWidth(86)
         self.list.setSpacing(0)
         self.list.setWrapping(False)
         self.list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -40,7 +40,7 @@ class NavTabs(QWidget):
     def addTab(self, w: QWidget, label: str, icon_name: str = "help") -> int:
         it = QListWidgetItem(icon(icon_name, "#c9ccd6"), label)
         it.setTextAlignment(Qt.AlignHCenter | Qt.AlignBottom)
-        it.setSizeHint(QSize(96, 64))
+        it.setSizeHint(QSize(80, 52))
         self.list.addItem(it)
         self.stack.addWidget(w)
         if self.list.currentRow() < 0:
