@@ -66,6 +66,7 @@ class StageView(QWidget):
         self.haze = 0.35
         self.show_labels = True
         self.show_models = True
+        self.show_hidden = False
         self.snap = 0.25
         self.fog_level = 0.0
         self._drag: Optional[tuple] = None
@@ -143,6 +144,13 @@ class StageView(QWidget):
                 b.setChecked(getattr(self, a))
                 b.blockSignals(False)
 
+    @property
+    def fixtures(self) -> list:
+        """Fixtures drawn in the stage view (hidden ones – e.g. not part of the rig – are skipped)."""
+        if self.show_hidden:
+            return self.show.fixtures
+        return [f for f in self.show.fixtures if not f.hidden]
+
     def set_show(self, show: Show) -> None:
         self.show = show
         self.selection.clear()
@@ -173,24 +181,41 @@ class StageView(QWidget):
     def project(self, p: Vec) -> Optional[QPointF]:
         return self.project_cam(self.to_cam(p))
 
-    def _scale2d(self) -> float:
-        W = self.show.stage_width + 3
+    def _extent2d(self) -> tuple[float, float, float, float]:
+        """World rectangle shown in the 2D views: (a_min, a_max, b_min, b_max)."""
+        W, D, H = self.show.stage_width, self.show.stage_depth, self.show.stage_height
+        xs = [fx.x for fx in self.fixtures] + [c for r in self.show.rigging for c in (r["a"][0], r["b"][0])]
+        a0, a1 = min([-W / 2] + xs) - 1.5, max([W / 2] + xs) + 1.5
         if self.mode == "top":
-            return min(self.width() / W, self.height() / (self.show.stage_depth + 2.5)) * 0.92
-        return min(self.width() / W, self.height() / (self.show.stage_height + 2.5)) * 0.92
+            ys = [fx.y for fx in self.fixtures] + [c for r in self.show.rigging for c in (r["a"][1], r["b"][1])]
+            return a0, a1, min([0.0] + ys) - 1.4, max([D + 0.5] + ys) + 1.0
+        zs = [fx.z for fx in self.fixtures] + [c for r in self.show.rigging for c in (r["a"][2], r["b"][2])]
+        return a0, a1, 0.0, max([H] + zs) + 1.2
+
+    def _scale2d(self) -> float:
+        a0, a1, b0, b1 = self._extent2d()
+        return min(self.width() / (a1 - a0), (self.height() - 50) / (b1 - b0)) * 0.96
 
     def map2d(self, a: float, b: float) -> QPointF:
         """top: (x, y)  front: (x, z)"""
         sc = self._scale2d()
+        a0, a1, b0, b1 = self._extent2d()
         if self.mode == "top":
-            return QPointF(self.width() / 2 + a * sc, self.height() / 2 + (self.show.stage_depth / 2 - b) * sc)
-        return QPointF(self.width() / 2 + a * sc, self.height() - 40 - b * sc)
+            return QPointF(self.width() / 2 + (a - (a0 + a1) / 2) * sc,
+                           (self.height() - 20) / 2 + ((b0 + b1) / 2 - b) * sc)
+        return QPointF(self.width() / 2 + (a - (a0 + a1) / 2) * sc, self._base2d(sc, b1 - b0) - b * sc)
+
+    def _base2d(self, sc: float, span: float) -> float:
+        """Screen y of the floor in the front view (content centred vertically)."""
+        return self.height() - 40 - max(0.0, (self.height() - 60 - span * sc) / 2)
 
     def unmap2d(self, p: QPointF) -> tuple[float, float]:
         sc = self._scale2d()
+        a0, a1, b0, b1 = self._extent2d()
+        a = (p.x() - self.width() / 2) / sc + (a0 + a1) / 2
         if self.mode == "top":
-            return (p.x() - self.width() / 2) / sc, self.show.stage_depth / 2 - (p.y() - self.height() / 2) / sc
-        return (p.x() - self.width() / 2) / sc, (self.height() - 40 - p.y()) / sc
+            return a, (b0 + b1) / 2 - (p.y() - (self.height() - 20) / 2) / sc
+        return a, (self._base2d(sc, b1 - b0) - p.y()) / sc
 
     # ---------------------------------------------------------------- states
     def _compute_states(self) -> None:
@@ -198,7 +223,7 @@ class StageView(QWidget):
         now = time.time()
         fog = 0.0
         self._states.clear()
-        for fx in self.show.fixtures:
+        for fx in self.fixtures:
             ft = self.show.types.get(fx.type_key)
             if not ft:
                 continue
@@ -366,7 +391,7 @@ class StageView(QWidget):
     def _draw_fog(self, p: QPainter) -> None:
         now = time.time()
         p.setPen(Qt.NoPen)
-        for fx in self.show.fixtures:
+        for fx in self.fixtures:
             st = self._states.get(fx.fid)
             if not st or st.fog <= 0.02:
                 continue
@@ -402,30 +427,19 @@ class StageView(QWidget):
             self._line(p, (-hw, j, 0), (hw, j, 0))
         p.setPen(QPen(QColor(90, 90, 110), 2))
         self._line(p, (-W / 2, 0, 0), (W / 2, 0, 0))
-        # trusses (rigging) – box truss meshes along the hanging positions
         cam = Camera(self.target, self.yaw, self.pitch, self.dist, self.width(), self.height())
         self._faces = []
-        levels = {}
-        for fx in self.show.fixtures:
-            if fx.mount == "hang" and abs(fx.x) <= W / 2 + 0.01:
-                key = (round(fx.y, 1), round(fx.z, 1))
-                lo, hi = levels.get(key, (fx.x, fx.x))
-                levels[key] = (min(lo, fx.x), max(hi, fx.x))
-        towers = {}
-        for fx in self.show.fixtures:
-            if abs(fx.x) > W / 2 + 0.01:
-                k = (round(fx.x, 1), round(fx.y, 1))
-                towers[k] = max(towers.get(k, 0.0), fx.z)
-        for (y, z), (lo, hi) in levels.items():
-            self._draw_truss(p, cam, (lo - 0.6, y, z + 0.16), (hi + 0.6, y, z + 0.16))
-        for (x, y), top in towers.items():
-            xo = x + 0.25 * (1 if x > 0 else -1)
-            self._draw_truss(p, cam, (xo, y, 0.0), (xo, y, top + 0.6))
+        self._paint_venue(p, W, D, H)
+        for kind, a, b, colour in self.rig_segments():
+            if kind == "pipe":
+                self._draw_pipe(p, cam, a, b, H)
+            else:
+                self._draw_truss(p, cam, a, b, colour=colour)
 
         # fixture meshes (also gives the lens position where each beam starts)
         lens_pos = {}
         fixture_faces = []
-        for fx in self.show.fixtures:
+        for fx in self.fixtures:
             ft = self.show.types[fx.type_key]
             st = self._states.get(fx.fid)
             if st is None:
@@ -446,7 +460,7 @@ class StageView(QWidget):
 
         # beams (additive)
         beams = []
-        for fx in self.show.fixtures:
+        for fx in self.fixtures:
             st = self._states.get(fx.fid)
             if not st or st.intensity <= 0.01 or not st.has_beam:
                 continue
@@ -488,7 +502,7 @@ class StageView(QWidget):
 
         # fixture models + trusses, painter's algorithm (far first)
         self._screen_pos.clear()
-        for fx in self.show.fixtures:
+        for fx in self.fixtures:
             q = self.project((fx.x, fx.y, fx.z))
             if q is not None:
                 self._screen_pos[fx.fid] = q
@@ -507,7 +521,7 @@ class StageView(QWidget):
         font = QFont()
         font.setPointSize(7)
         p.setFont(font)
-        for fx in self.show.fixtures:
+        for fx in self.fixtures:
             q = self._screen_pos.get(fx.fid)
             if q is None:
                 continue
@@ -521,17 +535,104 @@ class StageView(QWidget):
                 p.drawText(q + QPointF(-6, -16 if fx.mount == "hang" else 20), str(fx.fid))
         self._hud(p, "3D  |  drag: orbit   wheel: zoom   click: select (Ctrl = add)   Tab: next view")
 
-    def _draw_truss(self, p: QPainter, cam, a: Vec, b: Vec, size: float = 0.29) -> None:
+    # ---------------------------------------------------------------- rigging
+    def rig_segments(self) -> list[tuple[str, Vec, Vec, str]]:
+        """(kind, a, b, colour) – the show's explicit rigging, or trusses derived from the fixtures."""
+        if self.show.rigging:
+            return [(r.get("kind", "truss"), tuple(r["a"]), tuple(r["b"]), r.get("colour", "silver"))
+                    for r in self.show.rigging if "a" in r and "b" in r]
+        W = self.show.stage_width
+        out = []
+        levels: dict = {}
+        for fx in self.fixtures:
+            if fx.mount == "hang" and abs(fx.x) <= W / 2 + 0.01:
+                key = (round(fx.y, 1), round(fx.z, 1))
+                lo, hi = levels.get(key, (fx.x, fx.x))
+                levels[key] = (min(lo, fx.x), max(hi, fx.x))
+        towers: dict = {}
+        for fx in self.fixtures:
+            if abs(fx.x) > W / 2 + 0.01 and fx.mount == "hang":
+                k = (round(fx.x, 1), round(fx.y, 1))
+                towers[k] = max(towers.get(k, 0.0), fx.z)
+        for (y, z), (lo, hi) in levels.items():
+            out.append(("truss", (lo - 0.6, y, z + 0.16), (hi + 0.6, y, z + 0.16), "silver"))
+        for (x, y), top in towers.items():
+            xo = x + 0.25 * (1 if x > 0 else -1)
+            out.append(("truss", (xo, y, 0.0), (xo, y, top + 0.6), "silver"))
+        return out
+
+    def _paint_venue(self, p: QPainter, W: float, D: float, H: float) -> None:
+        """Audience floor, stage front grating and the projection screen."""
+        ys = [fx.y for fx in self.fixtures] + [c for r in self.show.rigging for c in (r["a"][1], r["b"][1])]
+        front = min([0.0] + ys)
+        if front < -0.5:
+            hw = W / 2 + 1.5
+            aud = self._poly([(-hw, front - 2.0, 0), (hw, front - 2.0, 0), (hw, 0, 0), (-hw, 0, 0)])
+            if aud:
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(17, 17, 22))
+                p.drawPolygon(aud)
+        if self.show.venue:
+            strip = self._poly([(-W / 2, 0, 0.002), (W / 2, 0, 0.002), (W / 2, 0.55, 0.002), (-W / 2, 0.55, 0.002)])
+            if strip:
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(44, 46, 54))
+                p.drawPolygon(strip)
+        sc = self.show.screen
+        if sc:
+            w, h, z0 = sc.get("width", 10.0), sc.get("height", 4.0), sc.get("z", 0.0)
+            y = sc.get("y", D + 0.46)
+            frame = self._poly([(-w / 2 - 0.15, y + 0.01, z0), (w / 2 + 0.15, y + 0.01, z0),
+                                (w / 2 + 0.15, y + 0.01, z0 + h + 0.15), (-w / 2 - 0.15, y + 0.01, z0 + h + 0.15)])
+            scr = self._poly([(-w / 2, y, z0), (w / 2, y, z0), (w / 2, y, z0 + h), (-w / 2, y, z0 + h)])
+            p.setPen(Qt.NoPen)
+            if frame:
+                p.setBrush(QColor(10, 10, 13))
+                p.drawPolygon(frame)
+            if scr:
+                g = QLinearGradient(scr.boundingRect().topLeft(), scr.boundingRect().bottomLeft())
+                g.setColorAt(0, QColor(70, 72, 78))
+                g.setColorAt(1, QColor(52, 54, 60))
+                p.setBrush(QBrush(g))
+                p.drawPolygon(scr)
+
+    def _draw_pipe(self, p: QPainter, cam, a: Vec, b: Vec, H: float) -> None:
+        """Black pipe bar (48 mm) with its suspension wires to the ceiling."""
+        mid = tuple((a[i] + b[i]) / 2 for i in range(3))
+        w = max(2.0, min(9.0, cam.px_size(mid, 0.048)))
+        top = H + 2.5
+        length = math.dist(a, b)
+        p.setPen(QPen(QColor(70, 72, 84, 150), 1))
+        n = max(2, int(length / 3.0) + 1)
+        for i in range(n):
+            t = 0.06 + 0.88 * i / (n - 1)
+            q = tuple(a[k] + (b[k] - a[k]) * t for k in range(3))
+            self._line(p, q, (q[0], q[1], top))
+        # in short pieces, so a pipe passing beside/behind the camera is still drawn
+        segs = max(1, int(length / 0.5))
+        pts = [self.project(tuple(a[k] + (b[k] - a[k]) * i / segs for k in range(3))) for i in range(segs + 1)]
+        body = QPen(QColor(12, 12, 15), w, Qt.SolidLine, Qt.RoundCap)
+        shine = QPen(QColor(78, 80, 92), max(1.0, w * 0.25))
+        for pen, dy in ((body, 0.0), (shine, -w * 0.25)):
+            p.setPen(pen)
+            for q0, q1 in zip(pts, pts[1:]):
+                if q0 is not None and q1 is not None:
+                    p.drawLine(q0 + QPointF(0, dy), q1 + QPointF(0, dy))
+
+    def _draw_truss(self, p: QPainter, cam, a: Vec, b: Vec, size: float = 0.29, colour: str = "silver") -> None:
         """Box truss drawn with lines (vectorised): 4 chords, rungs and diagonals."""
         import numpy as np
         if not self.show_models:
-            p.setPen(QPen(QColor(95, 98, 110), 4))
+            p.setPen(QPen(QColor(95, 98, 110) if colour != "black" else QColor(48, 50, 60), 4))
             self._line(p, a, b)
             return
+        black = colour == "black"
+        c_chord = QColor(62, 64, 76) if black else QColor(175, 178, 186)
+        c_brace = QColor(46, 48, 58) if black else QColor(150, 153, 162)
         from .. import meshes, truss_model
         tm = truss_model.load(self.show.truss_model or meshes.truss_default())
         if tm:
-            self._draw_truss_model(p, cam, np.array(a, float), np.array(b, float), tm)
+            self._draw_truss_model(p, cam, np.array(a, float), np.array(b, float), tm, black)
             return
         A, B = np.array(a, float), np.array(b, float)
         L = float(np.linalg.norm(B - A)) or 1.0
@@ -556,7 +657,7 @@ class StageView(QWidget):
         lines = []
         for c in range(4):                       # chords
             lines.append(QLineF(sx[0, c], sy[0, c], sx[-1, c], sy[-1, c]))
-        p.setPen(QPen(QColor(175, 178, 186), max(1.0, min(4.0, px))))
+        p.setPen(QPen(c_chord, max(1.0, min(4.0, px))))
         p.drawLines(lines)
         if n:
             rl = []
@@ -567,10 +668,10 @@ class StageView(QWidget):
                     c0, c1 = (0, 1) if i % 2 == 0 else (1, 0)
                     rl.append(QLineF(sx[i, c0], sy[i, c0], sx[i + 1, c1], sy[i + 1, c1]))
                     rl.append(QLineF(sx[i, 2 + c0], sy[i, 2 + c0], sx[i + 1, 2 + c1], sy[i + 1, 2 + c1]))
-            p.setPen(QPen(QColor(150, 153, 162), max(0.8, min(2.5, px * 0.6))))
+            p.setPen(QPen(c_brace, max(0.8, min(2.5, px * 0.6))))
             p.drawLines(rl)
 
-    def _draw_truss_model(self, p: QPainter, cam, A, B, tm: dict) -> None:
+    def _draw_truss_model(self, p: QPainter, cam, A, B, tm: dict, black: bool = False) -> None:
         """Truss from an imported model: segments tiled along A→B, tubes drawn as thick lines."""
         import numpy as np
         from ..truss_model import tile
@@ -590,7 +691,8 @@ class StageView(QWidget):
             if detail:
                 for t in seg["braces"]:
                     braces.append((o + u * t[0] + side * t[1] + w * t[2], o + u * t[3] + side * t[4] + w * t[5], t[6]))
-        for tubes, colour in ((chords, QColor(185, 188, 196)), (braces, QColor(150, 153, 162))):
+        cols = (QColor(64, 66, 78), QColor(48, 50, 60)) if black else (QColor(185, 188, 196), QColor(150, 153, 162))
+        for tubes, colour in ((chords, cols[0]), (braces, cols[1])):
             if not tubes:
                 continue
             P = np.array([[t[0], t[1]] for t in tubes]).reshape(-1, 3)
@@ -715,12 +817,13 @@ class StageView(QWidget):
         p.setPen(QColor(140, 140, 160))
         if top:
             p.drawText(self.map2d(-1.6, 0) + QPointF(0, 28), "AUDIENCE / DOWNSTAGE  (Y = 0)")
-            p.drawText(self.map2d(-0.6, D) + QPointF(0, -8), "UPSTAGE")
+            p.drawText(self.map2d(-W / 2, D) + QPointF(4, 12), "UPSTAGE")
         else:
             p.drawText(self.map2d(-1.6, 0) + QPointF(0, 28), "FLOOR (Z = 0)  –  seen from the audience")
+        self._paint_rig_2d(p, top)
         if top:
             p.setCompositionMode(QPainter.CompositionMode_Plus)
-            for fx in self.show.fixtures:
+            for fx in self.fixtures:
                 st = self._states.get(fx.fid)
                 if not st or st.intensity <= 0.01 or not st.has_beam:
                     continue
@@ -743,7 +846,7 @@ class StageView(QWidget):
         f2 = QFont()
         f2.setPointSize(7)
         p.setFont(f2)
-        order = sorted(self.show.fixtures, key=lambda f: f.z if top else -f.y)
+        order = sorted(self.fixtures, key=lambda f: f.z if top else -f.y)
         for fx in order:
             q = self.map2d(fx.x, fx.y if top else fx.z)
             self._screen_pos[fx.fid] = q
@@ -766,7 +869,7 @@ class StageView(QWidget):
                     p.drawLine(q, q + QPointF(v[0] / n * 22, v[1] / n * 22))
             p.setPen(QColor(255, 210, 60) if sel else QColor(205, 205, 215))
             p.drawText(q + QPointF(-8, -15), str(fx.fid))
-            if self.show_labels and (sel or len(self.show.fixtures) <= 24):
+            if self.show_labels and (sel or len(self.fixtures) <= 24):
                 p.setPen(QColor(150, 150, 165) if sel else QColor(110, 110, 125))
                 lab = f"{fx.name[:10]}  {'z' if top else 'y'}{(fx.z if top else fx.y):.1f}"
                 p.drawText(q + QPointF(-20, 24), lab)
@@ -777,6 +880,45 @@ class StageView(QWidget):
         txt = "TOP VIEW – edit X/Y" if top else "FRONT VIEW – edit X / height Z"
         self._hud(p, f"{txt}  |  drag fixture: move (whole selection, snap {self.snap:g} m)   "
                      "drag empty area: box select   Tab: next view")
+
+    def _paint_rig_2d(self, p: QPainter, top: bool) -> None:
+        sc = self.show.screen
+        if sc:
+            w, h, z0 = sc.get("width", 10.0), sc.get("height", 4.0), sc.get("z", 0.0)
+            y = sc.get("y", self.show.stage_depth + 0.46)
+            r = QRectF(self.map2d(-w / 2, y + 0.12 if top else z0 + h), self.map2d(w / 2, y - 0.12 if top else z0))
+            p.setPen(QPen(QColor(110, 112, 122), 1))
+            p.setBrush(QColor(58, 60, 66, 200 if top else 90))
+            p.drawRect(r.normalized())
+            p.setPen(QColor(150, 152, 162))
+            rn = r.normalized()
+            p.drawText(rn, Qt.AlignCenter, "SCREEN")
+        for kind, a, b, _c in self.rig_segments():
+            ia, ib = (0, 1) if top else (0, 2)
+            pa, pb = self.map2d(a[ia], a[ib]), self.map2d(b[ia], b[ib])
+            if kind == "pipe":
+                p.setPen(QPen(QColor(105, 108, 124), 3, Qt.SolidLine, Qt.RoundCap))
+                p.drawLine(pa, pb)
+            else:
+                half = 0.145 * self._scale2d()
+                if (pa - pb).manhattanLength() < 2:      # vertical tower seen from above
+                    p.setPen(QPen(QColor(120, 122, 136), 1.5))
+                    p.setBrush(QColor(40, 42, 52))
+                    p.drawRect(QRectF(pa.x() - half, pa.y() - half, 2 * half, 2 * half))
+                    p.drawLine(QPointF(pa.x() - half, pa.y() - half), QPointF(pa.x() + half, pa.y() + half))
+                else:
+                    ln = QLineF(pa, pb)
+                    nv = ln.normalVector().unitVector()
+                    off = QPointF(nv.dx() * half, nv.dy() * half)
+                    p.setPen(QPen(QColor(120, 122, 136), 1.2))
+                    p.drawLine(pa + off, pb + off)
+                    p.drawLine(pa - off, pb - off)
+                    n = max(1, int(ln.length() / max(4.0, 2 * half)))
+                    for i in range(n):
+                        t0, t1 = i / n, (i + 1) / n
+                        q0 = pa + (pb - pa) * t0 + (off if i % 2 == 0 else -off)
+                        q1 = pa + (pb - pa) * t1 + (-off if i % 2 == 0 else off)
+                        p.drawLine(q0, q1)
 
     def _hud(self, p: QPainter, text: str) -> None:
         p.setPen(QColor(120, 120, 140))

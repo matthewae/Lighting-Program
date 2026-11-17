@@ -538,3 +538,41 @@ def test_effect_order_and_blocks():
     e.order = "odd_even"
     e.blocks = 1
     assert [fixture_phase(e, f) for f in (1, 2, 3)] == [0.0, 0.5, 0.0]
+
+
+def test_gms_venue_layout_from_photos(imported, tmp_path):
+    """Importing the GMS show applies the real hall rig: back bar near the wall, front bar,
+    towers, FOH fresnel bar, screen – numbered left → right; speakers/unpatched hidden."""
+    from minidesk import venue
+    show, _ = imported
+    assert show.venue == venue.GMS and show.screen and len(show.rigging) == 5
+    fx = {f.fid: f for f in show.fixtures}
+    back = [fx[i] for i in range(1, 7)]
+    front = [fx[i] for i in range(7, 15)]
+    assert all(f.y > g.y for f in back for g in front)            # PAR BELAKANG nearest the wall
+    for row in (back, front, [fx[i] for i in range(19, 23)], [fx[i] for i in range(23, 27)],
+                [fx[i] for i in range(31, 41)]):
+        xs = [f.x for f in row]
+        assert xs == sorted(xs) and xs[0] < 0 < xs[-1]           # 1 = leftmost (audience view)
+    assert fx[27].x < 0 < fx[30].x and fx[28].x < 0 < fx[29].x
+    assert fx[15].x < 0 and fx[16].x < 0 and fx[17].x > 0 and fx[18].x > 0
+    assert all(fx[i].y < 0 for i in range(31, 41))                                     # above the audience
+    assert all(abs(abs(fx[i].rot) - 180) < 15 for i in range(31, 41))                  # facing the stage
+    assert all(fx[i].hidden for i in (61, 62, 63, 64)) and not fx[1].hidden
+    assert all(fx[i].patched for i in (61, 62, 63, 64))                                # patch untouched
+    # persisted with the show
+    p = tmp_path / "v.json"
+    show.save(str(p))
+    s2 = Show.load(str(p))
+    assert s2.rigging == show.rigging and s2.screen == show.screen and s2.fixture(61).hidden
+
+
+def test_aim_at_points_fixed_fixture():
+    from minidesk.venue import aim_at
+    from minidesk.vis_state import aim_direction
+    f = Fixture(1, "P", "x", x=-5.0, y=-4.0, z=6.0)
+    aim_at(f, 1.0, 2.0, 1.0)
+    d = aim_direction(f.aim, f.rot, False)
+    t = (6.0, 6.0, -5.0)
+    n = sum(v * v for v in t) ** 0.5
+    assert sum(a * b / n for a, b in zip(d, t)) > 0.999

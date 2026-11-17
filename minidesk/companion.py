@@ -44,8 +44,12 @@ def save(show: Show) -> str:
     data = {
         "stage": [show.stage_width, show.stage_depth, show.stage_height],
         "truss_model": show.truss_model,
+        "rigging": show.rigging,
+        "screen": show.screen,
+        "venue": show.venue,
         "positions": {str(f.slot if f.slot >= 0 else -f.fid): [f.x, f.y, f.z, f.mount, f.rot, f.aim]
                       for f in show.fixtures},
+        "hidden": [str(f.slot if f.slot >= 0 else -f.fid) for f in show.fixtures if f.hidden],
         "pt_options": {str(f.slot if f.slot >= 0 else -f.fid): [f.invert_pan, f.invert_tilt, f.swap_pan_tilt]
                        for f in show.fixtures if f.invert_pan or f.invert_tilt or f.swap_pan_tilt},
         "types": {k: {"kind": t.kind, "beam_angle": t.beam_angle, "pan_range": t.pan_range,
@@ -88,11 +92,22 @@ def load(show: Show) -> bool:
     except (OSError, ValueError):
         return False
     from .model import Step
+    # a project saved before the venue layout existed must not overwrite the venue layout
+    # that the import just applied (its positions were only the automatic guess)
+    keep_layout = bool(show.venue) and "venue" not in data
     st = data.get("stage")
-    if st:
+    if st and not keep_layout:
         show.stage_width, show.stage_depth, show.stage_height = st
     show.truss_model = data.get("truss_model", show.truss_model)
-    pos = data.get("positions", {})
+    if not keep_layout:
+        show.rigging = list(data.get("rigging", show.rigging))
+        show.screen = dict(data.get("screen", show.screen))
+        show.venue = data.get("venue", show.venue)
+    pos = {} if keep_layout else data.get("positions", {})
+    if not keep_layout and "hidden" in data:
+        hidden = set(data["hidden"])
+        for f in show.fixtures:
+            f.hidden = str(f.slot if f.slot >= 0 else -f.fid) in hidden
     for f in show.fixtures:
         v = pos.get(str(f.slot if f.slot >= 0 else -f.fid))
         if v:

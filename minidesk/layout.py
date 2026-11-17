@@ -27,6 +27,9 @@ def _row_kind(name: str) -> str | None:
 
 
 def auto_layout(show: Show) -> None:
+    show.rigging, show.screen, show.venue = [], {}, ""     # trusses follow the fixture rows again
+    for f in show.fixtures:
+        f.hidden = False
     W, D = show.stage_width, show.stage_depth
     assigned: dict[int, str] = {}
     rows: dict[str, list[int]] = {}

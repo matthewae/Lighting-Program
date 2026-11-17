@@ -65,6 +65,38 @@ class StageEditor(QWidget):
         hv.addWidget(self.cb_labels)
         lay.addWidget(gv)
 
+        gvn = QGroupBox("Venue layout")
+        gvl = QGridLayout(gvn)
+        self.venue_label = QLabel()
+        self.venue_label.setWordWrap(True)
+        gvl.addWidget(self.venue_label, 0, 0, 1, 4)
+        b_venue = QPushButton("Apply GMS hall layout (from the venue photos)")
+        b_venue.setToolTip("Back bar near the wall, front bar, two black truss towers, FOH fresnel bar "
+                           "and the projection screen – fixtures numbered left → right")
+        b_venue.clicked.connect(self.apply_venue)
+        gvl.addWidget(b_venue, 1, 0, 1, 4)
+        self.cb_screen = QCheckBox("Screen on the back wall")
+        self.cb_screen.toggled.connect(self._screen)
+        self.sw, self.sh = _spin(1, 40), _spin(0.5, 20)
+        self.sw.valueChanged.connect(self._screen)
+        self.sh.valueChanged.connect(self._screen)
+        gvl.addWidget(self.cb_screen, 2, 0)
+        gvl.addWidget(QLabel("W"), 2, 1)
+        gvl.addWidget(self.sw, 2, 2)
+        hh = QHBoxLayout()
+        hh.addWidget(QLabel("H"))
+        hh.addWidget(self.sh)
+        gvl.addLayout(hh, 2, 3)
+        self.cb_rig = QCheckBox("Use the venue rigging (pipes + towers) instead of trusses along the fixture rows")
+        self.cb_rig.toggled.connect(self._rig_toggled)
+        gvl.addWidget(self.cb_rig, 3, 0, 1, 4)
+        self.cb_hidden = QCheckBox("Show hidden fixtures")
+        self.cb_hidden.setToolTip("Hidden fixtures are not part of the rig (e.g. unpatched entries). "
+                                  "They stay patched and are still output – only the stage view skips them.")
+        self.cb_hidden.toggled.connect(lambda v: (setattr(self.view, "show_hidden", v), self.view.update()))
+        gvl.addWidget(self.cb_hidden, 4, 0, 1, 4)
+        lay.addWidget(gvn)
+
         gt0 = QGroupBox("Rigging / truss model")
         ht = QHBoxLayout(gt0)
         self.truss = QComboBox()
@@ -119,6 +151,9 @@ class StageEditor(QWidget):
             ("Centre on stage", self.centre, "Move the selection so it is centred left/right"),
             ("Turn 180°", self.turn, "Face the other way (audience ↔ upstage)"),
             ("Auto layout (all)", self.auto, "Place every fixture from its group names"),
+            ("Hide selected", lambda: self._hide(True), "Do not draw the selected fixtures in the stage view"),
+            ("Unhide selected", lambda: self._hide(False), "Draw the selected fixtures again "
+                                                          "(tick 'Show hidden fixtures' to select them)"),
         ]
         for i, (t, fn, tip) in enumerate(tools):
             b = QPushButton(t)
@@ -145,6 +180,18 @@ class StageEditor(QWidget):
         self._loading = True
         show = self.engine.show
         self._fill_truss()
+        self.venue_label.setText(f"Current: <b>{show.venue}</b> – {len(show.rigging)} rigging pieces"
+                                 if show.venue else "Current: automatic layout from the group names")
+        self.cb_screen.setChecked(bool(show.screen))
+        self.sw.setValue(show.screen.get("width", 10.0) if show.screen else 10.0)
+        self.sh.setValue(show.screen.get("height", 3.8) if show.screen else 3.8)
+        self.sw.setEnabled(bool(show.screen))
+        self.sh.setEnabled(bool(show.screen))
+        n_hidden = sum(1 for f in show.fixtures if f.hidden)
+        self.cb_hidden.setText(f"Show hidden fixtures ({n_hidden})")
+        self.cb_hidden.setEnabled(n_hidden > 0 or self.cb_hidden.isChecked())
+        self.cb_rig.setChecked(bool(show.rigging))
+        self.cb_rig.setEnabled(bool(show.rigging) or bool(show.venue))
         self.w.setValue(show.stage_width)
         self.d.setValue(show.stage_depth)
         self.h.setValue(show.stage_height)
@@ -208,6 +255,43 @@ class StageEditor(QWidget):
         self._fill_truss()
         segs = ", ".join(f"{s['length']:.2f} m" for s in data["segments"])
         QMessageBox.information(self, "Truss model", f"Truss width {data['width'] * 100:.1f} cm, segments: {segs}")
+        self.changed.emit()
+
+    def apply_venue(self):
+        from .. import venue
+        show = self.engine.show
+        if not venue.matches_gms(show) and QMessageBox.question(
+                self, "Venue layout", "This show's groups do not fully match the GMS hall rig "
+                "(PAR BELAKANG, PAR DEPAN, BEAM BEL, BEAM ATAS, STRB ATAS, STRB TOWER, PAR TOWER).\n"
+                "Apply anyway? Fixtures that do not match are placed by type.") != QMessageBox.Yes:
+            return
+        notes = venue.apply_gms(show)
+        self._done()
+        if notes:
+            QMessageBox.information(self, "Venue layout", "GMS hall layout applied.\n\n" + "\n".join(notes))
+
+    def _screen(self, *_):
+        if self._loading:
+            return
+        s = self.engine.show
+        if self.cb_screen.isChecked():
+            y = s.screen.get("y", s.stage_depth + 0.46) if s.screen else s.stage_depth + 0.46
+            s.screen = {"width": self.sw.value(), "height": self.sh.value(), "z": 0.0, "y": y}
+        else:
+            s.screen = {}
+        self.sw.setEnabled(bool(s.screen))
+        self.sh.setEnabled(bool(s.screen))
+        self.changed.emit()
+
+    def _rig_toggled(self, on: bool):
+        if self._loading:
+            return
+        s = self.engine.show
+        if on and not s.rigging and s.venue:
+            from .. import venue
+            s.rigging = venue.rigging_gms()
+        elif not on:
+            s.rigging = []
         self.changed.emit()
 
     def _stage(self, *_):
@@ -291,6 +375,13 @@ class StageEditor(QWidget):
                 f.rot = (f.rot + 180) % 360
                 if f.rot > 180:
                     f.rot -= 360
+            self._done()
+
+    def _hide(self, on: bool):
+        sel = self._need(1)
+        if sel:
+            for f in sel:
+                f.hidden = on
             self._done()
 
     def auto(self):

@@ -135,6 +135,7 @@ class Fixture:
     invert_pan: bool = False      # patch options (like the console's pan/tilt invert & swap)
     invert_tilt: bool = False
     swap_pan_tilt: bool = False
+    hidden: bool = False          # not drawn in the stage view (still patched / output normally)
 
     @property
     def patched(self) -> bool:
@@ -395,6 +396,12 @@ class Show:
     console_info: dict = field(default_factory=dict)
     source_path: str = ""          # console .SHO file this show was imported from
     truss_model: str = ""          # "" = default (bundled user truss if present), "builtin", or a file
+    # explicit rigging (empty = derived from the fixture positions):
+    #   {"kind": "pipe"|"truss", "name": str, "a": [x, y, z], "b": [x, y, z], "colour": "black"|"silver"}
+    rigging: list = field(default_factory=list)
+    # projection screen / LED wall on the back wall: {"width", "height", "z", "y"} (empty = none)
+    screen: dict = field(default_factory=dict)
+    venue: str = ""                # name of the venue layout preset that was applied
 
     # ---------------------------------------------------------------- lookup
     def fixture(self, fid: int) -> Optional[Fixture]:
@@ -445,6 +452,9 @@ class Show:
             "console_info": self.console_info,
             "source_path": self.source_path,
             "truss_model": self.truss_model,
+            "rigging": self.rigging,
+            "screen": self.screen,
+            "venue": self.venue,
         }
 
     @staticmethod
@@ -467,6 +477,9 @@ class Show:
         s.console_info = d.get("console_info", {})
         s.source_path = d.get("source_path", "")
         s.truss_model = d.get("truss_model", "")
+        s.rigging = list(d.get("rigging", []))
+        s.screen = dict(d.get("screen", {}))
+        s.venue = d.get("venue", "")
         return s
 
     def save(self, path: str) -> None:

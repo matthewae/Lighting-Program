@@ -76,7 +76,22 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
 - **Stage Layout** (tab khusus): ukuran panggung, view **Top** (geser kiri/kanan + depan/belakang)
   dan **Front** (geser kiri/kanan + tinggi), drag fixture dengan snap grid, pilih banyak (Ctrl+klik
   atau tarik kotak), form X/Y/Z, mount, arah (yaw) dan tilt, tombol *Line up*, *Distribute*,
-  *Same height*, *Mirror*, *Centre*, *Turn 180°*, *Auto layout*.
+  *Same height*, *Mirror*, *Centre*, *Turn 180°*, *Auto layout*, *Hide / Unhide selected*.
+- **Layout venue GMS (dari foto venue)** – otomatis dipakai saat `GMS_MATT.SHO` dibuka, atau lewat
+  tab *Stage → Venue layout → Apply GMS hall layout*. Penomoran selalu **kiri → kanan** dilihat dari
+  penonton (PAR 1 paling kiri):
+  - **Bar belakang** (pipa hitam, layer paling dekat dinding, tepat di atas layar):
+    PAR 1–6 (PAR BELAKANG), moving beam 19–22 (BEAM BEL), strobe 28–29 (STRB ATAS)
+  - **Bar depan** (pipa hitam, 1 layer di depannya): PAR 7–14 (PAR DEPAN), moving beam 23–26 (BEAM ATAS)
+  - **Tower box truss hitam** kiri/kanan layar: strobe 27 / 30 di atas, PAR 15–16 (kiri) dan 17–18 (kanan)
+  - **Bar FOH** di atas penonton: fresnel 31–40 mengarah ke panggung
+  - **Layar** abu-abu ±10 × 3,8 m di dinding belakang (ukuran bisa diubah)
+  - Fixture yang bukan bagian rig (unpatched, dan 61–64 DSK-1500VS – di foto itu speaker monitor)
+    disembunyikan dari visualizer saja; patch di console **tidak** diubah. Centang
+    *Show hidden fixtures* untuk melihatnya lagi.
+
+![Layout venue GMS – 3D](docs/screenshot_venue_3d.png)
+![Layout venue GMS – Front view](docs/screenshot_venue_front.png)
 - **Beam moving head** (Programmer → *Beam*): tombol cepat gobo (Open, 1–8, shake), gobo rotation
   (stop / CW / CCW), prism (off / on / macro), prism rotation, frost (0/50/100 %), zoom, focus, iris,
   shutter (open / strobe / closed), lamp on / reset. Setiap channel punya **daftar fungsi** (rentang DMX)
@@ -256,6 +271,7 @@ minidesk/
   commands.py     command line gaya dot2
   vis_state.py    DMX -> intensitas, warna, arah beam (dipakai visualizer)
   layout.py       auto layout posisi fixture dari nama group
+  venue.py        preset layout venue (GMS hall: bar belakang/depan, tower, FOH, layar)
   ui/             jendela utama, visualizer, programmer, executor, cue editor, patch, DMX monitor
 samples/GMS_MATT.SHO   contoh show dari console
 tests/                 unit test (pytest)

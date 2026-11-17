@@ -461,4 +461,6 @@ def import_sho_bytes(raw: bytes, name: str = "MINI1000") -> tuple[Show, ImportRe
     rep.presets = len(show.presets)
     from .layout import auto_layout
     auto_layout(show)
+    from . import venue
+    venue.auto_apply(show)          # known venue (e.g. GMS hall) → its real rig layout
     return show, rep
