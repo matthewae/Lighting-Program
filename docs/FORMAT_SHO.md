@@ -52,6 +52,13 @@ reproduces the original file byte for byte.
 | `0x203` | 40 slots × (coarse channel, fine channel), 1 based – the console's wheel layout: slot `2p` = wheel A of page `p`, slot `2p+1` = wheel B |
 | `0x4D3` | channel names, 12 chars each |
 
+### Playback tables
+
+* `0xD9C60`: 600 playback records = 40 banks x 15 faders (record *i* = bank *i // 15 + 1*,
+  position *i % 15 + 1*, shown on the console as `P<bank>/<position>`).
+* `0xEFA60`: 400 fixed playback records = 20 fixed pages x 20 keys (`F<page>/<key>`).
+* Heap object owner index: 0..599 = playback record, 600..999 = fixed record (600 + index).
+
 ### Playback record (64 bytes)
 
 | Rel. offset | Content |
@@ -66,7 +73,9 @@ reproduces the original file byte for byte.
 
 Block `k` lives at `0x115E5E + k*0xC0`. An object header block has the bytes
 `01 00 01 00 00 00 00 ff` at +8; +4 = owner playback index, +6 = number of blocks of
-the object, +0x23 / +0x29 = times in ms. Step data starts on a block boundary with
+the object. The cue times of the console's *Edit Time* screen are 24 bit little endian
+milliseconds: +0x20 Delay In, +0x23 Fade In, +0x26 Out Delay, +0x29 Out Fade; +0x2C holds a
+16 character label (spaces when unused). Step data starts on a block boundary with
 `?? ?? ff ff`, followed by fixture entries:
 
 ```
@@ -80,3 +89,29 @@ The code is mapped to a channel through the library slot table. Values above 255
 16 bit (coarse/fine) for slots that have a fine channel.
 
 Unused blocks keep stale data, so step decoding is best effort.
+
+
+### Library slot table and the attribute keys
+
+Every library record has 40 slots of (coarse, fine) channel numbers at +0x203. The console
+shows them on the encoder wheels A / B / C behind the attribute keys (page 2 = slot + 20):
+
+| Key | A | B | C |
+|---|---|---|---|
+| Dimmer | 0 | 1 | 3 |
+| Tilt/Pan | – | 4 | 5 |
+| Colour | – | 6 | 7 |
+| Colour Mix | 18 | 19 | 17 |
+| Gobo1 | – | 10 | 11 |
+| Gobo2 | – | 12 | 13 |
+| Beam | 8 | 9 | 2 |
+| Effect | – | 16 | – |
+| Control | – | 14 | 15 |
+
+(verified against the console screens: e.g. STROBE 2.5 on Dimmer = "Dimmer / – / Dimmer BL",
+CM-280 on Beam = "Zoom / Focus / –").
+
+### Presets
+
+Preset heap blocks may start with a stale word pair before the first `FFFE <fixture>`
+marker; it is skipped (the BLUE preset of the sample starts like that).

@@ -73,6 +73,8 @@ class StepValuesDialog(QDialog):
 class CueEditor(QWidget):
     changed = Signal()
     loadedToProgrammer = Signal()
+    editTimeRequested = Signal()
+    paramsRequested = Signal()
     COLS = [("#", "Cue number (double-click = go)"), ("Name", "Cue name"),
             ("Delay in", "Seconds before the fade in starts"),
             ("Fade in", "Fade in time (0 = playback default fade)"),
@@ -93,6 +95,7 @@ class CueEditor(QWidget):
         lay.setContentsMargins(4, 4, 4, 4)
         head = QHBoxLayout()
         self.title = QLabel("No playback selected – click a playback name in the fader bar")
+        self.title.setWordWrap(True)
         self.title.setObjectName("title")
         head.addWidget(self.title, 1)
         self.now = QLabel("")
@@ -111,6 +114,16 @@ class CueEditor(QWidget):
                 b.setObjectName(obj)
             b.clicked.connect(fn)
             tr.addWidget(b)
+        b_time = QPushButton("Edit Time…")
+        b_time.setToolTip("Console Edit Time: delay / fade in & out, trigger, MIB, fixture overlap, snap %, "
+                          "order direction and attribute times per cue")
+        b_time.clicked.connect(self.editTimeRequested.emit)
+        b_par = QPushButton("Playback Parameters…")
+        b_par.setToolTip("Console Playback Parameters: release mode, FX size/speed, run mode, priority, "
+                         "use delay and fade time")
+        b_par.clicked.connect(self.paramsRequested.emit)
+        tr.addWidget(b_time)
+        tr.addWidget(b_par)
         lay.addLayout(tr)
 
         g = QGroupBox("Playback options")
@@ -235,7 +248,7 @@ class CueEditor(QWidget):
         pb = st.pb if st else None
         self._enable(pb is not None)
         if pb:
-            self.title.setText(f"Playback {pb.number}: {pb.name}")
+            self.title.setText(f"{pb.console_label}  {pb.name}" + (f"   ({pb.bank} bank {pb.console_bank}, position {pb.console_pos})" if pb.slot >= 0 else "   (user playback)"))
             self.e_name.setText(pb.name)
             self.e_mode.setCurrentIndex(0 if pb.mode == "chase" else 1)
             self.e_dir.setCurrentText(pb.direction)
@@ -304,7 +317,7 @@ class CueEditor(QWidget):
         pb.xfade = self.e_xfade.value()
         pb.release = self.e_release.value()
         self.bpm.setText(f"{60 / max(pb.speed, 0.01):.0f} BPM")
-        self.title.setText(f"Playback {pb.number}: {pb.name}")
+        self.title.setText(f"{pb.console_label}  {pb.name}" + (f"   ({pb.bank} bank {pb.console_bank}, position {pb.console_pos})" if pb.slot >= 0 else "   (user playback)"))
         self.changed.emit()
 
     def _tap(self):

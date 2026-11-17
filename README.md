@@ -90,6 +90,35 @@ playback berjalan – dan **kompatibel dengan console CODE MINI 1000T / MINI 100
     disembunyikan dari visualizer saja; patch di console **tidak** diubah. Centang
     *Show hidden fixtures* untuk melihatnya lagi.
 
+- **Fitur console CODE MINI 1000T (tab *Live*, *Effects*, *Cues*)**:
+  - **LIVE SHOW**: Fixtures 20 per halaman (UP/DOWN), Groups 15 per halaman sesuai slot console
+    (slot kosong tetap kosong, mis. grup 11), Presets 2 × 10, *Fixture Open/Full*, *Fixture Align*
+    (On = semua fixture terpilih dapat nilai yang sama), *Even/Odd*, *Find*, *Locate*, *Clear*.
+  - **Tombol atribut + encoder A/B/C**: Dimmer, Tilt/Pan, Colour, Colour Mix, Gobo1, Gobo2, Beam,
+    Effect, Control – label wheel diambil dari tabel slot library console, jadi sama persis dengan
+    layar console (mis. STROBE: *Dimmer / – / Dimmer BL*, beam: *– / Tilt / Pan*, *Zoom / Focus / –*).
+    Tekan tombol yang sama sekali lagi = halaman 2. Nilai tampil seperti console: `50% (128)`.
+  - **Effect Select**: library efek console lengkap dengan nomor yang sama –
+    Intensity 1–28, Position 1–107, Color 1–67, Beam 1–31 (Circle, TiltSwing G3, TiltSAW, PanSwing,
+    Pan SAW, Square, Diamond, Spiral, Triangle, Zigzag, Random, Swap, Dimmer 1:2, DimmerPWM,
+    Rainbow, Color1/Color2, Iris, Gobo, Focus, Prism, Frost …). *Current Loaded Effects*,
+    *Effect Size %*, *Effect Speed (BPM)*, *Effect Spread (°)*, *Direction*, *Effect Mode
+    (Absolute / Rel(Center))*, *Fixture Order*, *Delete Effect*, *Delete All Effects* dan
+    **User Effects 1–20** (Save Running Effects, Edit Label, Delete). Editor efek bebas tetap ada
+    di sub-tab *Effect editor*.
+  - **Bank playback seperti console**: *Playback banks* 40 bank × 15 fader (P1/1 … P40/15) dan
+    *Fixed banks* 20 bank × 20 tombol (F1/1 … F20/20, tekan = on/off). Posisi kosong tetap kosong.
+  - **Edit Time** (tab Cues atau Live): Delay In, Fade In, Out Delay, Out Fade, Trigger (Go/Follow),
+    MIB, Fixture Overlap, Snap Percent, Order Direction dan waktu per atribut (Dimmer, Shutter,
+    Position, Colour, Gobo, Beam), *Attribute Time Use Global*.
+  - **Playback Parameters**: Release Mode (Release All Attribute / Dimmer Only), FX Size Speed,
+    Run Mode (Time / Manual / Beat), Priority, Use Delay and Fade time.
+
+![LIVE SHOW](docs/screenshot_console_liveshow.png)
+![Effect Select](docs/screenshot_console_effects.png)
+![Fixed banks](docs/screenshot_console_fixed.png)
+![Edit Time](docs/screenshot_console_edittime.png)
+
 ![Layout venue GMS – 3D](docs/screenshot_venue_3d.png)
 ![Layout venue GMS – Front view](docs/screenshot_venue_front.png)
 - **Beam moving head** (Programmer → *Beam*): tombol cepat gobo (Open, 1–8, shake), gobo rotation
@@ -272,6 +301,8 @@ minidesk/
   vis_state.py    DMX -> intensitas, warna, arah beam (dipakai visualizer)
   layout.py       auto layout posisi fixture dari nama group
   venue.py        preset layout venue (GMS hall: bar belakang/depan, tower, FOH, layar)
+  console.py      tombol atribut + encoder A/B/C (slot library), Locate, Open/Full, Even/Odd
+  console_fx.py   library efek console (Intensity/Position/Color/Beam, nomor sama dengan console)
   ui/             jendela utama, visualizer, programmer, executor, cue editor, patch, DMX monitor
 samples/GMS_MATT.SHO   contoh show dari console
 tests/                 unit test (pytest)

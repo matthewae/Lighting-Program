@@ -348,6 +348,10 @@ class MainWindow(QMainWindow):
         self.cues = CueEditor(self.engine)
         self.cues.changed.connect(lambda: (self.execs.rebind(), self.mark_dirty()))
         self.cues.loadedToProgrammer.connect(self._selection_changed)
+        self.cues.editTimeRequested.connect(lambda: self.cues.st and (self._set_current(self.cues.st.pb),
+                                                                      self.edit_time()))
+        self.cues.paramsRequested.connect(lambda: self.cues.st and (self._set_current(self.cues.st.pb),
+                                                                    self.playback_params()))
         self.patch = PatchPanel(self.engine)
         self.patch.changed.connect(self._patch_changed)
         self.patch.selectFixtures.connect(self._select_from_patch)
@@ -362,11 +366,34 @@ class MainWindow(QMainWindow):
         self.fx = self.prog.fx
         self.fx.storeRequested.connect(self.store_dialog)
         self.fx.changed.connect(self.sheet.grid.update)
+        # console style pages (CODE MINI 1000T)
+        from .console_effects import ConsoleEffectSelect
+        from .live_show import LiveShow
+        from PySide6.QtWidgets import QTabWidget
+        self._current_pb = None
+        self.live = LiveShow(self.engine)
+        self.live.selectionChanged.connect(self._selection_changed)
+        self.live.programmerChanged.connect(self.sheet.grid.update)
+        self.live.storeRequested.connect(self.store_dialog)
+        self.live.editTimeRequested.connect(self.edit_time)
+        self.live.paramsRequested.connect(self.playback_params)
+        self.cfx = ConsoleEffectSelect(self.engine)
+        self.cfx.changed.connect(self.sheet.grid.update)
+        self.cfx.changed.connect(self.fx.refresh)
+        self.cfx.userChanged.connect(self.mark_dirty)
+        self.cfx.storeRequested.connect(self.store_dialog)
+        self.fx.changed.connect(self.cfx.refresh)
+        self.fx_tabs = QTabWidget()
+        self.fx_tabs.addTab(self.cfx, "Effect Select (console library)")
+        self.fx_tabs.addTab(self.fx, "Effect editor (all parameters)")
+        self.cfx.manualRequested.connect(lambda: self.fx_tabs.setCurrentIndex(1))
+        self.live.effectsRequested.connect(lambda: (self.show_tab(self.fx_tabs), self.fx_tabs.setCurrentIndex(0)))
         from .nav import NavTabs
         self.tabs = NavTabs()
         self._tab_pages = {}
-        for w, label, ic in ((self.sheet, "Fixtures", "fixtures"), (self.prog, "Programmer", "programmer"),
-                             (self.fx, "Effects", "effects"), (self.presets, "Presets", "presets"),
+        for w, label, ic in ((self.live, "Live", "live"),
+                             (self.sheet, "Fixtures", "fixtures"), (self.prog, "Programmer", "programmer"),
+                             (self.fx_tabs, "Effects", "effects"), (self.presets, "Presets", "presets"),
                              (self.cues, "Cues", "cues"), (self.stage, "Stage", "stage"),
                              (self.patch, "Patch", "patch"), (self.monitor, "DMX", "dmx")):
             self._tab_pages[w] = self.tabs.addTab(self._scroll(w), label, ic)
@@ -581,6 +608,7 @@ class MainWindow(QMainWindow):
         self._usb_present = bool(wanted & set(ports)) if wanted else None
 
     def _feedback(self, st) -> None:
+        self._set_current(st.pb)
         if self.engine.show.output.midi_feedback:
             self.midi.send_note((st.pb.number - 1) % 128)
 
@@ -711,6 +739,8 @@ class MainWindow(QMainWindow):
         self.view.selection = set(self.engine.selection)
         self.prog.rebuild()
         self.prog.fx.refresh()
+        self.live.refresh()
+        self.cfx.refresh()
         self.stage.refresh()
         self.sheet.grid.update()
 
@@ -719,8 +749,43 @@ class MainWindow(QMainWindow):
         self.mark_dirty()
 
     def _edit_playback(self, st) -> None:
+        self._set_current(st.pb)
         self.cues.bind(st)
         self.show_tab(self.cues)
+
+    def _set_current(self, pb) -> None:
+        self._current_pb = pb
+        self.live.set_current_playback(pb)
+
+    def _current_playback(self):
+        pb = self._current_pb or (self.cues.st.pb if self.cues.st else None)
+        if pb is None:
+            QMessageBox.information(self, "Playback", "Choose a playback first (click its name on the executor "
+                                    "bar, press GO, or open it in the Cues tab).")
+        return pb
+
+    def edit_time(self) -> None:
+        from .console_dialogs import EditTimeDialog
+        pb = self._current_playback()
+        if pb is None:
+            return
+        if not pb.steps:
+            QMessageBox.information(self, "Edit Time", f"{pb.console_label} {pb.name} has no cues yet.")
+            return
+        if EditTimeDialog(pb, self).exec():
+            st = self.engine.state_for(pb)
+            if self.cues.st is st:
+                self.cues.bind(st)
+            self.mark_dirty()
+
+    def playback_params(self) -> None:
+        from .console_dialogs import PlaybackParamsDialog
+        pb = self._current_playback()
+        if pb is not None and PlaybackParamsDialog(pb, self).exec():
+            st = self.engine.state_for(pb)
+            if self.cues.st is st:
+                self.cues.bind(st)
+            self.mark_dirty()
 
     def _go_current(self) -> None:
         if self.cues.st:
@@ -842,8 +907,11 @@ class MainWindow(QMainWindow):
         self.presets.rebuild()
         self.stage.refresh()
         self.cues.bind(None)
-        if any(p.steps for p in show.playbacks):
-            self.execs.bank.setCurrentText("With steps")
+        self._set_current(None)
+        self.live.fpage = self.live.gpage = self.live.ppage = 0
+        self.live.base_selection = []
+        self.live.refresh()
+        self.cfx.refresh()
         self.execs.rebind()
         self.restart_io()
         self.dirty = False

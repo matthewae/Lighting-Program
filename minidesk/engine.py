@@ -23,6 +23,23 @@ from .effects import apply_effect
 from .model import Effect, Fixture, FixtureType, Playback, Show, Step
 
 COLOUR_ATTRS = {"red", "green", "blue", "white", "amber", "uv"}
+PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2, "highest": 3}
+# attributes that jump (do not cross-fade); they switch at the cue's "Snap Percent"
+SNAP_ATTRS = {"gobo", "gobo_rot", "color", "prism", "prism_rot", "colormacro", "effect", "control",
+              "shutter", "strobe", "fog", "fan"}
+# console Edit Time attribute groups
+TIME_GROUPS = ["Dimmer", "Shutter", "Position", "Colour", "Gobo", "Beam"]
+_GROUP_OF = {"dimmer": "Dimmer", "shutter": "Shutter", "strobe": "Shutter",
+             "pan": "Position", "tilt": "Position", "pan_fine": "Position", "tilt_fine": "Position",
+             "speed": "Position", "red": "Colour", "green": "Colour", "blue": "Colour", "white": "Colour",
+             "amber": "Colour", "uv": "Colour", "cyan": "Colour", "magenta": "Colour", "yellow": "Colour",
+             "color": "Colour", "colormacro": "Colour", "ctc": "Colour", "gobo": "Gobo", "gobo_rot": "Gobo",
+             "prism": "Beam", "prism_rot": "Beam", "frost": "Beam", "zoom": "Beam", "focus": "Beam",
+             "iris": "Beam"}
+
+
+def time_group(attr: str) -> Optional[str]:
+    return _GROUP_OF.get(attr)
 
 
 @dataclass
@@ -41,6 +58,8 @@ class PlaybackState:
     bounce: int = 1             # current bounce direction
     releasing: float = -1.0     # >= 0: seconds into the release fade
     taps: list = field(default_factory=list)
+    timing: dict = field(default_factory=dict)   # (fid, ch) -> (d_in, f_in, d_out, f_out, snap) of the step
+    fx_clock: float = 0.0       # effect clock of this playback (fader = FX speed modes)
 
     @property
     def effective_level(self) -> float:
@@ -75,6 +94,9 @@ class Engine:
         self._taps: list = []
         self._eff_start: dict[int, float] = {}
         self._stamp = 0.0
+        self.held: dict[tuple[int, int], int] = {}   # LTP kept after "Release Dimmer Only" playbacks
+        self.align = False                        # console "Fixture Align": wheels set the same value
+        self.even_odd_state = 0
         self.set_show(show)
 
     # ----------------------------------------------------------------- setup
@@ -155,6 +177,83 @@ class Engine:
                     cols = [i for i, c in enumerate(ft.channels) if c.attr in COLOUR_ATTRS]
                     for i in cols:
                         self.programmer.setdefault(fid, {})[i] = v
+
+    # ------------------------------------------------- console programmer surface
+    def output_value(self, fid: int, ch: int) -> int:
+        """Current DMX value of a fixture channel (last frame)."""
+        e = self._by_id.get(fid)
+        if not e or not e[0].patched:
+            return self.programmer.get(fid, {}).get(ch, 0)
+        u = self.universes.get(e[0].universe)
+        a = e[0].address - 1 + ch
+        return u[a] if u is not None and 0 <= a < 512 else 0
+
+    def wheel_value(self, key: str, page: int, wheel: int) -> Optional[tuple[str, int]]:
+        """(label, value) of an encoder wheel for the first selected fixture that has it."""
+        from . import console
+        slot = console.wheel_slot(key, page, wheel)
+        for fid in self.selection:
+            e = self._by_id.get(fid)
+            if not e:
+                continue
+            ch = console.slot_channel(e[1], slot)
+            if ch:
+                v = self.programmer.get(fid, {}).get(ch[0])
+                return e[1].channels[ch[0]].name, (self.output_value(fid, ch[0]) if v is None else v)
+        return None
+
+    def wheel_move(self, key: str, page: int, wheel: int, delta: int = 0, value: Optional[int] = None) -> None:
+        """Turn an encoder: relative for every fixture, or (Fixture Align) the same value for all."""
+        from . import console
+        slot = console.wheel_slot(key, page, wheel)
+        with self.lock:
+            first = None
+            for fid in self.selection:
+                e = self._by_id.get(fid)
+                if not e:
+                    continue
+                ch = console.slot_channel(e[1], slot)
+                if not ch:
+                    continue
+                c, f = ch
+                cur = self.programmer.get(fid, {}).get(c)
+                cur = self.output_value(fid, c) if cur is None else cur
+                if value is not None:
+                    new = value
+                elif self.align and first is not None:
+                    new = first
+                else:
+                    new = cur + delta
+                new = max(0, min(255, int(new)))
+                if first is None:
+                    first = new
+                self.programmer.setdefault(fid, {})[c] = new
+                if f >= 0:
+                    self.programmer[fid].setdefault(f, 0)
+
+    def open_full(self, fids: Optional[list[int]] = None) -> None:
+        from . import console
+        with self.lock:
+            for fid in (fids if fids is not None else self.selection):
+                e = self._by_id.get(fid)
+                if e:
+                    self.programmer.setdefault(fid, {}).update(console.open_full_values(e[1]))
+
+    def locate(self, fids: Optional[list[int]] = None) -> None:
+        from . import console
+        with self.lock:
+            for fid in (fids if fids is not None else self.selection):
+                e = self._by_id.get(fid)
+                if e:
+                    self.programmer.setdefault(fid, {}).update(console.locate_values(e[1]))
+
+    def even_odd(self, base: list[int]) -> list[int]:
+        """Even/Odd key over ``base`` (the full selection): all -> odd -> even -> all."""
+        from . import console
+        sel, self.even_odd_state = console.even_odd(base, self.even_odd_state)
+        with self.lock:
+            self.selection = [f for f in sel if f in self._by_id]
+        return self.selection
 
     def clear_programmer(self, selection_too: bool = True) -> None:
         with self.lock:
@@ -287,6 +386,10 @@ class Engine:
                 if st.releasing < 0:
                     st.releasing = 0.0
                 return
+            if st.running and st.pb.release_mode == "dimmer":    # keep LTP values on stage
+                for key, v in st.out.items():
+                    if not self._is_htp(key):
+                        self.held[key] = v
             st.running = False
             st.paused = False
             st.releasing = -1.0
@@ -317,6 +420,7 @@ class Engine:
 
     def release_all(self) -> None:
         with self.lock:
+            self.held.clear()
             for st in self.states:
                 st.level = 0
                 st.flash = False
@@ -326,11 +430,55 @@ class Engine:
         st.src = dict(st.out)
         st.index = index
         st.t_step = 0.0
+        st.timing = self._step_timing(st, st.pb.steps[index]) if 0 <= index < len(st.pb.steps) else {}
         self._bump(st)
 
+    def _step_timing(self, st: PlaybackState, step: Step) -> dict:
+        """Per channel (delay in, fade in, delay out, fade out, snap) for the console cue options:
+        attribute times, fixture overlap + order direction and snap percent (unscaled seconds)."""
+        if not (step.attr_times or step.overlap < 100.0 or step.snap > 0):
+            return {}
+        sf = 1.0
+        di, fi, do, fo = (x * max(st.speed_factor * self.speed_master, 0.01) for x in self._times(st, step))
+        fids = list(step.values)
+        n = len(fids)
+        order = step.order_dir
+        if order == "backward":
+            fids = fids[::-1]
+        elif order == "random":
+            rnd = random.Random(id(step))
+            rnd.shuffle(fids)
+        elif order in ("center_out", "outside_in"):
+            mid = (n - 1) / 2
+            fids = sorted(fids, key=lambda f: abs(list(step.values).index(f) - mid),
+                          reverse=order == "outside_in")
+        rank = {f: k for k, f in enumerate(fids)}
+        ov = max(0.0, min(1.0, step.overlap / 100.0))
+        out = {}
+        for fid, chans in step.values.items():
+            e = self._by_id.get(fid)
+            if not e:
+                continue
+            for c in chans:
+                attr = e[1].channels[c].attr if c < len(e[1].channels) else "none"
+                g = time_group(attr)
+                d1, f1, d2, f2 = di, fi, do, fo
+                if g and g in step.attr_times:
+                    d1, f1 = step.attr_times[g]
+                    d2, f2 = d1, f1
+                if ov < 1.0 and n > 1:                  # fixtures one after another
+                    k = rank.get(fid, 0)
+                    fa = f1 / (1 + (n - 1) * (1 - ov))
+                    fb = f2 / (1 + (n - 1) * (1 - ov))
+                    d1, f1 = d1 + k * fa * (1 - ov), fa
+                    d2, f2 = d2 + k * fb * (1 - ov), fb
+                out[(fid, c)] = (d1 / sf, f1 / sf, d2 / sf, f2 / sf, attr in SNAP_ATTRS)
+        return out
     def _times(self, st: PlaybackState, step: Step) -> tuple[float, float, float, float]:
         """(delay_in, fade_in, delay_out, fade_out) in seconds, after speed factor."""
         sf = max(st.speed_factor * self.speed_master, 0.01)
+        if not st.pb.use_times:                            # "Use Delay and Fade time" off: cues snap
+            return 0.0, 0.0, 0.0, 0.0
         fi = step.fade if step.fade > 0 else st.pb.fade
         fo = step.fade_out if step.fade_out >= 0 else fi
         if st.pb.mode == "chase" and st.pb.xfade > 0:      # crossfade as % of the step time
@@ -346,6 +494,8 @@ class Engine:
 
     def _hold_time(self, st: PlaybackState, step: Step) -> float:
         h = step.hold if step.hold >= 0 else st.pb.speed
+        if st.pb.run_mode == "beat":                       # one step per beat of the TAP tempo
+            h = 0.5
         return max(0.02, h) / max(st.speed_factor * self.speed_master, 0.01)
 
     @staticmethod
@@ -367,18 +517,44 @@ class Engine:
         k_out = self._progress(st.t_step, do, fo)
         target = {(f, c): v for f, chans in step.values.items() for c, v in chans.items()}
         out = {}
+        timing = st.timing
+        sf = max(st.speed_factor * self.speed_master, 0.01)
+        snap = max(0.0, min(100.0, step.snap)) / 100.0
         for key, v in target.items():
             htp = self._is_htp(key)
             a = st.src.get(key, 0 if htp else v)
-            k = k_out if (htp and v < a) else k_in      # intensity going down uses fade out
+            tm = timing.get(key)
+            if tm:
+                ki = self._progress(st.t_step, tm[0] / sf, tm[1] / sf)
+                ko = self._progress(st.t_step, tm[2] / sf, tm[3] / sf)
+                if tm[4] and not htp:                    # snap attribute: jump at Snap Percent
+                    ki = 1.0 if (st.t_step >= tm[0] / sf and ki >= snap) else 0.0
+            else:
+                ki, ko = k_in, k_out
+                if not htp and self._is_snap(key):        # gobo / wheel / prism ... jump
+                    ki = 1.0 if (st.t_step >= di and k_in >= snap) else 0.0
+            k = ko if (htp and v < a) else ki            # intensity going down uses fade out
             out[key] = round(a + (v - a) * k)
         for key, a in st.src.items():                    # intensity not in the new step fades out
             if key not in target and self._is_htp(key) and k_out < 1.0:
                 out[key] = round(a * (1 - k_out))
+        if step.mib and k_out >= 1.0 and len(st.pb.steps) > 1:   # move in black
+            nxt = st.pb.steps[(st.index + 1) % len(st.pb.steps)]
+            for fid, chans in nxt.values.items():
+                e = self._by_id.get(fid)
+                if not e:
+                    continue
+                dims = [i for i, c in enumerate(e[1].channels) if c.attr in HTP_ATTRS]
+                if dims and all(out.get((fid, i), 0) == 0 for i in dims):
+                    for c, v in chans.items():
+                        if c not in dims:
+                            out[(fid, c)] = v
         st.out = out
         if st.paused:
             return
         auto = (st.pb.mode == "chase" and len(st.pb.steps) > 1) or (st.pb.mode == "cuelist" and step.follow)
+        if st.pb.run_mode == "manual":                     # only GO advances
+            auto = False
         if auto:
             wait = self._hold_time(st, step)
             if st.pb.mode == "chase" and st.pb.xfade > 0:
@@ -390,6 +566,14 @@ class Engine:
                 j = self._next_index(st, True)
                 if j is not None and (j != st.index or st.pb.direction == "random"):
                     self._goto(st, j)
+
+    def _is_snap(self, key: tuple[int, int]) -> bool:
+        fid, ch = key
+        e = self._by_id.get(fid)
+        if not e:
+            return False
+        chans = e[1].channels
+        return ch < len(chans) and chans[ch].attr in SNAP_ATTRS
 
     def _is_htp(self, key: tuple[int, int]) -> bool:
         fid, ch = key
@@ -417,6 +601,9 @@ class Engine:
             t = self.clock
             for st in self.states:
                 if st.running:
+                    lvl = st.effective_level
+                    k = lvl if st.pb.fx_mode in ("speed", "size_speed") else 1.0
+                    st.fx_clock += dt * self.fx_speed * k
                     self._advance(st, dt)
                     if st.releasing >= 0:
                         st.releasing += dt
@@ -426,7 +613,8 @@ class Engine:
             for u in self.universes.values():
                 u[:] = bytes(512)
             active = sorted((s for s in self.states if s.running and s.effective_level > 0),
-                            key=lambda s: s.stamp)
+                            key=lambda s: (PRIORITY_RANK.get(s.pb.priority, 1), s.stamp))
+            held = self.held
             gm = 0.0 if self.blackout else self.grand_master
             for fx, ft in self._fx:
                 if not fx.patched:
@@ -434,6 +622,11 @@ class Engine:
                 uni = self.universes.setdefault(fx.universe, bytearray(512))
                 n = len(ft.channels)
                 vals = [c.default for c in ft.channels]
+                if held:
+                    for i in range(n):
+                        v = held.get((fx.fid, i))
+                        if v is not None:
+                            vals[i] = v
                 htp = [0.0] * n
                 htp_set = [False] * n
                 for st in active:
@@ -453,8 +646,15 @@ class Engine:
                 for st in active:      # effects stored in the running steps
                     step = st.step()
                     if step and step.effects:
+                        lvl = st.effective_level
+                        mode = st.pb.fx_mode
                         for eff in step.effects:
-                            apply_effect(eff, ft, fx.fid, vals, t, st.effective_level, st.t_step)
+                            from .effects import INTENSITY
+                            if mode in ("size", "size_speed") or eff.type in INTENSITY:
+                                k = lvl                  # fader scales the effect (size / intensity)
+                            else:
+                                k = 1.0                  # Normal: fader = intensity only
+                            apply_effect(eff, ft, fx.fid, vals, st.fx_clock, k, st.t_step)
                 prog = self.programmer.get(fx.fid)
                 if prog:
                     for i, v in prog.items():

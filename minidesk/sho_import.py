@@ -64,7 +64,7 @@ MAX_FIXTURES = 512
 PB_TABLE = 0xD9C60            # 64 byte playback records
 PB_COUNT = 600
 FIXED_TABLE = 0xEFA60
-FIXED_COUNT = 300
+FIXED_COUNT = 400            # 20 fixed banks x 20 keys (owner index 600..999)
 PB_STRIDE = 0x40
 PRESET_TABLE = 0xE3260        # 400 x 64 byte preset records
 PRESET_COUNT = 400
@@ -250,7 +250,9 @@ class ShoReader:
                     continue
                 c, v = struct.unpack_from("<HH", buf, q)
                 q += 4
-                if cur is None or c >= 2 * PAGES:
+                if cur is None:          # stale word pair before the first fixture marker
+                    continue
+                if c >= 2 * PAGES:
                     break
                 ents.setdefault(cur, []).append((c, v))
             if ok and ents:
@@ -291,7 +293,8 @@ class ShoReader:
         if h + STEP_BLOCK > min(len(d), STEP_HEAP_END) or d[h + 8:h + 16] != HDR_SIG:
             return None, []
         obj_blocks = _u16(d, h + 6)
-        times = (_u16(d, h + 0x23), _u16(d, h + 0x29))
+        # console Edit Time of the cue: delay in, fade in, out delay, out fade (24 bit ms)
+        times = tuple(int.from_bytes(d[h + o:h + o + 3], "little") for o in (0x20, 0x23, 0x26, 0x29))
         steps = []
 
         def scan(blocks, only_first=False):
@@ -366,6 +369,7 @@ def import_sho_bytes(raw: bytes, name: str = "MINI1000") -> tuple[Show, ImportRe
             key = ft.key
             n += 1
         ft.lib_index = idx
+        ft.slots = [[c, f] for c, f in e.slots]
         show.add_type(ft)
         type_keys[idx] = key
     rep.types = len(show.types)
@@ -398,14 +402,13 @@ def import_sho_bytes(raw: bytes, name: str = "MINI1000") -> tuple[Show, ImportRe
         pb = Playback(name=pname or f"{bank} {i + 1}", bank=bank, number=number,
                       speed=max(0.05, (speed_ms or 1000) / 1000.0),
                       source=f"{bank} #{i + 1} blocks {first}-{last}", slot=i)
+        t_delay = t_fade = t_odelay = t_ofade = 0
         if times:
-            t_a, t_b = times
-            if t_b:
-                pb.fade = t_b / 1000.0
-            if t_a:
-                pb.speed = t_a / 1000.0
+            t_delay, t_fade, t_odelay, t_ofade = times
         for sn, ents in enumerate(raw_steps):
-            st = Step(name=f"Step {sn + 1}")
+            st = Step(name=f"Step {sn + 1}", delay=t_delay / 1000.0, fade=t_fade / 1000.0,
+                      delay_out=t_odelay / 1000.0 if t_odelay else -1.0,
+                      fade_out=t_ofade / 1000.0)
             for fx, _order, pairs in ents:
                 fid = idx_to_fid[fx]
                 fixture = show.fixture(fid)

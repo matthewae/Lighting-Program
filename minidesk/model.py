@@ -46,6 +46,9 @@ class FixtureType:
     lib_index: int = -1           # index in the console fixture library (-1 = not from console)
     model: str = ""               # 3D model: built-in name (see meshes.BUILTIN) or OBJ/GLB/STL file path
     model_scale: float = 1.0      # extra scale for imported models (they are auto-fitted first)
+    # console encoder slot table: 40 x [coarse, fine] channel numbers (1 based, 0 = empty);
+    # slot = position behind the attribute keys / wheels A-B-C (see console.py)
+    slots: list = field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -182,6 +185,9 @@ EFFECT_TYPES = {
     "nod": ("Tilt nod", "Position"),
     "sweep": ("Sweep (pan + tilt drop)", "Position"),
     "jump": ("Random jump", "Position"),
+    "zigzag_up": ("Zig-zag up", "Position"),
+    "zigzag_down": ("Zig-zag down", "Position"),
+    "xy_step": ("Pan + tilt swap", "Position"),
     # Intensity (dimmer)
     "dim_sine": ("Dimmer sine", "Intensity"),
     "dim_saw": ("Dimmer saw (ramp up)", "Intensity"),
@@ -203,6 +209,8 @@ EFFECT_TYPES = {
     "flicker": ("Fire flicker", "Intensity"),
     "candle": ("Candle", "Intensity"),
     "odd_even": ("Odd / even", "Intensity"),
+    "dim_step": ("Dimmer step (one by one)", "Intensity"),
+    "dim_soft": ("Dimmer slow chase", "Intensity"),
     # Colour
     "rainbow": ("Rainbow", "Color"),
     "color_chase": ("Colour chase A/B", "Color"),
@@ -216,6 +224,9 @@ EFFECT_TYPES = {
     "police": ("Police", "Color"),
     "pastel": ("Pastel rainbow", "Color"),
     "color_strobe": ("Colour flash", "Color"),
+    "rainbow_step": ("Rainbow step", "Color"),
+    "rainbow_swap": ("Rainbow swap", "Color"),
+    "wheel_fx": ("Colour wheel effect", "Color"),
     # Beam
     "gobo_step": ("Gobo step", "Beam"),
     "zoom_wave": ("Zoom wave", "Beam"),
@@ -227,6 +238,7 @@ EFFECT_TYPES = {
     "iris_pulse": ("Iris pulse", "Beam"),
     "gobo_shake": ("Gobo shake", "Beam"),
     "prism_spin": ("Prism spin", "Beam"),
+    "beam_fx": ("Beam attribute effect", "Beam"),
 }
 
 
@@ -249,6 +261,14 @@ class Effect:
     order: str = "forward"        # forward | backward | center_out | outside_in | odd_even | random
     blocks: int = 1               # fixtures that move together
     color_c: tuple = (0, 255, 0)  # third colour (3-colour chase)
+    # console style parameters (CODE MINI 1000T effect engine)
+    mode: str = ""                # "" = default (position relative, others absolute), "rel" | "abs"
+    groups: int = 0               # G3 / G4 ...: fixtures repeat every N (0 = off)
+    phase_step: float = -1.0      # degrees between consecutive fixtures / groups (-1 = use spread)
+    attribute: str = ""           # wheel_fx / beam_fx target (color, color2, gobo, gobo2, iris, ...)
+    wave: str = "sine"            # sine | linear | step | swap | scroll
+    console: str = ""             # console library entry, e.g. "Position 14"
+    label: str = ""               # name shown in the loaded effects list
 
     def to_json(self) -> dict:
         d = asdict(self)
@@ -275,12 +295,19 @@ class Step:
     delay: float = 0.0         # delay before the fade in starts
     delay_out: float = -1.0    # delay before the fade out starts, -1 = same as delay
     follow: bool = False       # cuelist: go to the next cue automatically after fade + hold
+    # console "Edit Time" columns
+    mib: bool = False          # move in black: preset the next cue while the fixture is dark
+    overlap: float = 100.0     # fixture overlap %: 100 = all fixtures together, 0 = one after another
+    snap: float = 0.0          # snap percent: when non-fading attributes (gobo, wheel...) jump
+    order_dir: str = "forward" # fixture order direction: forward | backward | center_out | outside_in | random
+    attr_times: dict = field(default_factory=dict)   # {"Dimmer": [delay, fade], "Position": [...], ...}
 
     def to_json(self) -> dict:
         return {
             "name": self.name, "fade": self.fade, "hold": self.hold,
             "fade_out": self.fade_out, "delay": self.delay, "delay_out": self.delay_out,
-            "follow": self.follow,
+            "follow": self.follow, "mib": self.mib, "overlap": self.overlap, "snap": self.snap,
+            "order_dir": self.order_dir, "attr_times": self.attr_times,
             "values": {str(f): {str(c): v for c, v in ch.items()} for f, ch in self.values.items()},
             "effects": [e.to_json() for e in self.effects],
         }
@@ -291,12 +318,25 @@ class Step:
             name=d.get("name", ""), fade=float(d.get("fade", 0)), hold=float(d.get("hold", -1)),
             fade_out=float(d.get("fade_out", -1)), delay=float(d.get("delay", 0)),
             delay_out=float(d.get("delay_out", -1)), follow=bool(d.get("follow", False)),
+            mib=bool(d.get("mib", False)), overlap=float(d.get("overlap", 100.0)),
+            snap=float(d.get("snap", 0.0)), order_dir=d.get("order_dir", "forward"),
+            attr_times={k: [float(v[0]), float(v[1])] for k, v in d.get("attr_times", {}).items()},
             values={int(f): {int(c): int(v) for c, v in ch.items()} for f, ch in d.get("values", {}).items()},
             effects=[Effect.from_json(e) for e in d.get("effects", [])],
         )
 
 
 PB_DIRECTIONS = ["forward", "backward", "bounce", "random"]
+
+# console layout: 40 playback banks x 15 faders, 20 fixed banks x 20 keys
+PB_BANKS, PB_PER_BANK = 40, 15
+FIXED_BANKS, FIXED_PER_BANK = 20, 20
+# console "Playback Parameters"
+RELEASE_MODES = {"all": "Release All Attribute", "dimmer": "Release Dimmer Only"}
+FX_MODES = {"normal": "Normal", "size": "Fader = FX Size", "speed": "Fader = FX Speed",
+            "size_speed": "Fader = FX Size + Speed"}
+RUN_MODES = {"time": "Mode=Time", "manual": "Mode=Manual", "beat": "Mode=Beat (TAP)"}
+PRIORITIES = {"low": "Low", "normal": "Normal", "high": "High", "highest": "Highest"}
 
 
 @dataclass
@@ -314,12 +354,39 @@ class Playback:
     loop: bool = True          # chase/cuelist wraps around at the end (False = stop/hold at the end)
     xfade: float = 0.0         # chase crossfade as % of the step time (0 = use fade times)
     release: float = 0.0       # fade out time when the playback is stopped (seconds)
+    release_mode: str = "all"  # console Playback Parameters, see RELEASE_MODES ...
+    fx_mode: str = "normal"
+    run_mode: str = "time"
+    priority: str = "normal"
+    use_times: bool = True     # "Use Delay and Fade time" (off = cues snap)
+
+    @property
+    def console_bank(self) -> int:
+        """1 based bank (Playback) or fixed page (Fixed); 0 = not on the console."""
+        if self.slot < 0:
+            return 0
+        return self.slot // (FIXED_PER_BANK if self.bank == "Fixed" else PB_PER_BANK) + 1
+
+    @property
+    def console_pos(self) -> int:
+        if self.slot < 0:
+            return 0
+        return self.slot % (FIXED_PER_BANK if self.bank == "Fixed" else PB_PER_BANK) + 1
+
+    @property
+    def console_label(self) -> str:
+        """Like the console: P1/2 = bank 1, playback 2 – F3/7 = fixed page 3, key 7."""
+        if self.slot < 0:
+            return "U"
+        return f"{'F' if self.bank == 'Fixed' else 'P'}{self.console_bank}/{self.console_pos}"
 
     def to_json(self) -> dict:
         return {
             "name": self.name, "mode": self.mode, "speed": self.speed, "fade": self.fade,
             "number": self.number, "bank": self.bank, "source": self.source, "slot": self.slot,
             "direction": self.direction, "loop": self.loop, "xfade": self.xfade, "release": self.release,
+            "release_mode": self.release_mode, "fx_mode": self.fx_mode, "run_mode": self.run_mode,
+            "priority": self.priority, "use_times": self.use_times,
             "steps": [s.to_json() for s in self.steps],
         }
 
@@ -331,6 +398,9 @@ class Playback:
             bank=d.get("bank", "Playback"), source=d.get("source", ""), slot=int(d.get("slot", -1)),
             direction=d.get("direction", "forward"), loop=bool(d.get("loop", True)),
             xfade=float(d.get("xfade", 0)), release=float(d.get("release", 0)),
+            release_mode=d.get("release_mode", "all"), fx_mode=d.get("fx_mode", "normal"),
+            run_mode=d.get("run_mode", "time"), priority=d.get("priority", "normal"),
+            use_times=bool(d.get("use_times", True)),
             steps=[Step.from_json(s) for s in d.get("steps", [])],
         )
 
@@ -402,6 +472,8 @@ class Show:
     # projection screen / LED wall on the back wall: {"width", "height", "z", "y"} (empty = none)
     screen: dict = field(default_factory=dict)
     venue: str = ""                # name of the venue layout preset that was applied
+    # console "User Effects" 1..20: {"slot": n, "name": str, "effects": [Effect json]}
+    user_effects: list = field(default_factory=list)
 
     # ---------------------------------------------------------------- lookup
     def fixture(self, fid: int) -> Optional[Fixture]:
@@ -455,6 +527,7 @@ class Show:
             "rigging": self.rigging,
             "screen": self.screen,
             "venue": self.venue,
+            "user_effects": self.user_effects,
         }
 
     @staticmethod
@@ -480,6 +553,7 @@ class Show:
         s.rigging = list(d.get("rigging", []))
         s.screen = dict(d.get("screen", {}))
         s.venue = d.get("venue", "")
+        s.user_effects = list(d.get("user_effects", []))
         return s
 
     def save(self, path: str) -> None:

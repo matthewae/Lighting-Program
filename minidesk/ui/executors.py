@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QMenu, QProgressBar, QPushButton,
-                               QSlider, QSpinBox, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QLabel, QMenu, QProgressBar,
+                               QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget)
 
 from ..engine import Engine, PlaybackState
+from ..model import FIXED_BANKS, FIXED_PER_BANK, PB_BANKS, PB_PER_BANK
 
 
 class ExecutorStrip(QWidget):
@@ -96,8 +97,9 @@ class ExecutorStrip(QWidget):
         m.addAction("Stop immediately", lambda: (self.engine.stop(self.st), self.slider.setValue(0)))
         m.exec(self.name.mapToGlobal(pos))
 
-    def bind(self, st: PlaybackState | None) -> None:
+    def bind(self, st: PlaybackState | None, empty_label: str = "") -> None:
         self.st = st
+        self.empty_label = empty_label
         en = st is not None
         for w in (self.slider, self.b_go, self.b_back, self.b_pause, self.b_stop, self.b_flash, self.name):
             w.setEnabled(en)
@@ -111,7 +113,8 @@ class ExecutorStrip(QWidget):
     def sync(self) -> None:
         st = self.st
         if st is None:
-            self.num.setText("")
+            self.num.setText(getattr(self, "empty_label", ""))
+            self.num.setToolTip("Empty position on the console")
             self.name.setText("—")
             self.step.setText("")
             self.slider.blockSignals(True)
@@ -119,8 +122,9 @@ class ExecutorStrip(QWidget):
             self.slider.blockSignals(False)
             self.lvl.setText("")
             return
-        self.num.setText(f"{st.pb.number}")
-        self.num.setToolTip(f"Executor {st.pb.number}  ({st.pb.bank})")
+        self.num.setText(st.pb.console_label if st.pb.slot >= 0 else f"U{st.pb.number}")
+        self.num.setToolTip(f"{st.pb.console_label} – {st.pb.bank}" + (
+            f" bank {st.pb.console_bank}, position {st.pb.console_pos}" if st.pb.slot >= 0 else ""))
         nm = st.pb.name
         self.name.setText(nm if len(nm) <= 10 else nm[:9] + "…")
         n = len(st.pb.steps)
@@ -140,29 +144,90 @@ class ExecutorStrip(QWidget):
             self.lvl.setText(f"{v}%")
 
 
+class FixedKey(QPushButton):
+    """One of the 20 fixed playback keys: press = on / off (like the console's number keys)."""
+
+    def __init__(self, engine: Engine, bar: "ExecutorBar", pos: int):
+        super().__init__()
+        self.engine, self.bar, self.pos = engine, bar, pos
+        self.st: PlaybackState | None = None
+        self.setMinimumSize(96, 46)
+        self.setCheckable(False)
+        self.clicked.connect(self._toggle)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._menu)
+
+    def bind(self, st: PlaybackState | None, label: str) -> None:
+        self.st, self.label = st, label
+        self.setEnabled(st is not None)
+        self.sync()
+
+    def _toggle(self):
+        st = self.st
+        if not st:
+            return
+        if st.running:
+            self.engine.stop(st, fade=True)
+            st.level = 0.0
+        else:
+            self.engine.go(st)
+            self.bar.playbackTriggered.emit(st)
+        self.sync()
+
+    def _menu(self, pos):
+        if not self.st:
+            return
+        m = QMenu(self)
+        m.addAction("Edit cues…", lambda: self.bar.playbackSelected.emit(self.st))
+        m.addAction("GO (next cue)", lambda: self.engine.go(self.st))
+        m.addAction("Stop immediately", lambda: (self.engine.stop(self.st), setattr(self.st, "level", 0.0)))
+        m.exec(self.mapToGlobal(pos))
+
+    def sync(self):
+        st = self.st
+        if st is None:
+            self.setText(f"{self.pos}\n—")
+            self.setStyleSheet("color:#5a5e6c;")
+            self.setToolTip(f"{self.label}: empty")
+            return
+        nm = st.pb.name if len(st.pb.name) <= 13 else st.pb.name[:12] + "…"
+        n = len(st.pb.steps)
+        state = f"▶ {st.index + 1}/{n}" if st.running else f"{n} cue{'s' if n != 1 else ''}"
+        self.setText(f"{self.pos}  {nm}\n{state}")
+        self.setToolTip(f"{st.pb.console_label}  {st.pb.name}\nClick = on / off, right-click = more")
+        self.setStyleSheet("background:#1f4d2e; border-color:#3fbf6a; font-weight:600;" if st.running
+                           else "background:#2a2f14; border-color:#5d6a1f;" if n else "")
+
+
 class ExecutorBar(QWidget):
     playbackSelected = Signal(object)
     playbackTriggered = Signal(object)
 
-    def __init__(self, engine: Engine, per_page: int = 15, parent=None):
+    MODES = ["Playback", "Fixed", "User", "All"]
+    LABELS = {"Playback": "Playback banks (40 × 15)", "Fixed": "Fixed banks (20 × 20)",
+              "User": "User (made here)", "All": "All, in order"}
+
+    def __init__(self, engine: Engine, per_page: int = PB_PER_BANK, parent=None):
         super().__init__(parent)
         self.engine = engine
         self.per_page = per_page
         self.page = 0
-        self.filter = "all"
+        self.filter = "Playback"
         lay = QHBoxLayout(self)
         lay.setContentsMargins(2, 2, 2, 2)
         side = QVBoxLayout()
         t = QLabel("Playbacks")
         t.setObjectName("title")
         side.addWidget(t)
-        self.per_label = QLabel(f"{per_page} per bank")
-        side.addWidget(self.per_label)
         self.bank = QComboBox()
-        self.bank.addItems(["All", "With steps", "Fixed", "Playback", "User"])
-        self.bank.currentTextChanged.connect(self._bank)
+        for m in self.MODES:
+            self.bank.addItem(self.LABELS[m], m)
+        self.bank.setToolTip("Playback banks: 40 banks of 15 faders (console P1/1 … P40/15)\n"
+                             "Fixed banks: 20 banks of 20 keys (console Fixed key + 1 … 20)")
+        self.bank.currentIndexChanged.connect(lambda _i: self._bank(self.bank.currentData()))
         side.addWidget(self.bank)
-        side.addWidget(QLabel("Bank"))
+        self.per_label = QLabel("Bank")
+        side.addWidget(self.per_label)
         self.spin = QSpinBox()
         self.spin.setRange(1, 1)
         self.spin.valueChanged.connect(self._page)
@@ -208,15 +273,33 @@ class ExecutorBar(QWidget):
         side.addLayout(r2)
         side.addStretch(1)
         lay.addLayout(side)
+        # faders (playback banks / user / all)
+        self.strip_box = QWidget()
+        sl = QHBoxLayout(self.strip_box)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setSpacing(2)
         self.strips = []
-        for _ in range(per_page):
+        for _ in range(max(per_page, PB_PER_BANK)):
             s = ExecutorStrip(engine)
             s.selected.connect(self.playbackSelected.emit)
             s.triggered.connect(self.playbackTriggered.emit)
             self.strips.append(s)
-            lay.addWidget(s)
-        self.strip_layout = lay
-        lay.addStretch(1)
+            sl.addWidget(s)
+        self.strip_layout = sl
+        sl.addStretch(1)
+        lay.addWidget(self.strip_box, 1)
+        # fixed keys 1..20 (2 rows of 10, like the console)
+        self.fixed_box = QWidget()
+        g = QGridLayout(self.fixed_box)
+        g.setContentsMargins(4, 4, 4, 4)
+        g.setSpacing(4)
+        self.keys = []
+        for i in range(FIXED_PER_BANK):
+            k = FixedKey(engine, self, i + 1)
+            g.addWidget(k, i // 10, i % 10)
+            self.keys.append(k)
+        lay.addWidget(self.fixed_box, 1)
+        self.fixed_box.hide()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.sync)
         self.timer.start(150)
@@ -241,9 +324,12 @@ class ExecutorBar(QWidget):
         self.engine.release_all()
         self.sync()
 
-    def _bank(self, txt):
-        self.filter = txt
+    def _bank(self, mode):
+        self.filter = mode or "Playback"
+        self.spin.blockSignals(True)
         self.spin.setValue(1)
+        self.spin.blockSignals(False)
+        self.page = 0
         self.rebind()
 
     def _page(self, v):
@@ -251,54 +337,87 @@ class ExecutorBar(QWidget):
         self.rebind()
 
     def visible_states(self) -> list[PlaybackState]:
-        sts = sorted(self.engine.states, key=lambda s: s.pb.number)
         f = self.filter
-        if f == "With steps":
-            sts = [s for s in sts if s.pb.steps]
-        elif f in ("Fixed", "Playback", "User"):
-            sts = [s for s in sts if s.pb.bank == f]
+        if f in ("Playback", "Fixed"):
+            return sorted((s for s in self.engine.states if s.pb.bank == f and s.pb.slot >= 0),
+                          key=lambda s: s.pb.slot)
+        sts = sorted(self.engine.states, key=lambda s: s.pb.number)
+        if f == "User":
+            sts = [s for s in sts if s.pb.slot < 0]
         return sts
 
     def rebind(self) -> None:
-        sts = self.visible_states()
-        pages = max(1, (len(sts) + self.per_page - 1) // self.per_page)
+        f = self.filter
+        fixed = f == "Fixed"
+        self.fixed_box.setVisible(fixed)
+        self.strip_box.setVisible(not fixed)
+        if f in ("Playback", "Fixed"):
+            per = FIXED_PER_BANK if fixed else PB_PER_BANK
+            pages = FIXED_BANKS if fixed else PB_BANKS
+            by_slot = {s.pb.slot: s for s in self.visible_states()}
+        else:
+            per = self.per_page
+            sts = self.visible_states()
+            pages = max(1, (len(sts) + per - 1) // per)
+        self.per_label.setText("Fixed page" if fixed else "Bank")
         self.spin.blockSignals(True)
         self.spin.setRange(1, pages)
         self.spin.setSuffix(f" / {pages}")
         self.spin.blockSignals(False)
         self.page = min(self.page, pages - 1)
-        chunk = sts[self.page * self.per_page:(self.page + 1) * self.per_page]
+        b = self.page
+        if fixed:
+            for i, k in enumerate(self.keys):
+                k.bind(by_slot.get(b * per + i), f"F{b + 1}/{i + 1}")
+            return
         for i, s in enumerate(self.strips):
-            s.bind(chunk[i] if i < len(chunk) else None)
+            s.setVisible(i < per)
+        if f == "Playback":
+            for i, s in enumerate(self.strips[:per]):
+                s.bind(by_slot.get(b * per + i), f"P{b + 1}/{i + 1}")
+        else:
+            chunk = sts[b * per:(b + 1) * per]
+            for i, s in enumerate(self.strips[:per]):
+                s.bind(chunk[i] if i < len(chunk) else None)
 
     def set_per_page(self, n: int) -> None:
-        if n == self.per_page:
-            return
+        """Faders per page for the User / All lists (playback banks always have 15)."""
         while len(self.strips) < n:
             s = ExecutorStrip(self.engine)
             s.selected.connect(self.playbackSelected.emit)
             s.triggered.connect(self.playbackTriggered.emit)
             self.strip_layout.insertWidget(self.strip_layout.count() - 1, s)
             self.strips.append(s)
-        while len(self.strips) > n:
+        while len(self.strips) > max(n, PB_PER_BANK):
             s = self.strips.pop()
             s.setParent(None)
             s.deleteLater()
         self.per_page = n
-        self.per_label.setText(f"{n} per bank")
         self.rebind()
 
     def bank_step(self, d: int) -> None:
         self.spin.setValue(max(1, min(self.spin.maximum(), self.spin.value() + d)))
 
     def show_playback(self, st: PlaybackState) -> None:
-        sts = self.visible_states()
-        if st not in sts:
-            self.bank.setCurrentText("All")
+        pb = st.pb
+        if pb.slot >= 0:
+            mode = pb.bank if pb.bank in ("Playback", "Fixed") else "All"
+        else:
+            mode = "User"
+        if mode != self.filter:
+            self.bank.setCurrentIndex(self.MODES.index(mode))
+        if mode in ("Playback", "Fixed"):
+            self.spin.setValue(pb.console_bank)
+        else:
             sts = self.visible_states()
-        if st in sts:
-            self.spin.setValue(sts.index(st) // self.per_page + 1)
+            if st in sts:
+                self.spin.setValue(sts.index(st) // self.per_page + 1)
 
     def sync(self) -> None:
-        for s in self.strips:
-            s.sync()
+        if self.filter == "Fixed":
+            for k in self.keys:
+                k.sync()
+        else:
+            for s in self.strips:
+                if s.isVisible():
+                    s.sync()

@@ -371,7 +371,8 @@ def test_presets_store_and_recall():
 def test_import_presets(imported):
     show, _ = imported
     names = [p.name for p in show.presets]
-    assert names[:3] == ["WHITE", "GREEN", "YELLOW"]
+    assert names[:4] == ["WHITE", "GREEN", "BLUE", "YELLOW"]          # as on the console's preset page
+    assert [p.slot for p in show.presets[:4]] == [0, 1, 2, 3]
     assert show.presets[0].category == "Color"
 
 
@@ -576,3 +577,162 @@ def test_aim_at_points_fixed_fixture():
     t = (6.0, 6.0, -5.0)
     n = sum(v * v for v in t) ** 0.5
     assert sum(a * b / n for a, b in zip(d, t)) > 0.999
+
+
+# ------------------------------------------------------------ console features
+def test_console_banks_fixed_and_playback(imported):
+    """Playback banks 40 x 15 and fixed banks 20 x 20 (400 fixed records in the file)."""
+    from minidesk.model import FIXED_BANKS, FIXED_PER_BANK, PB_BANKS, PB_PER_BANK
+    show, _ = imported
+    assert (PB_BANKS, PB_PER_BANK, FIXED_BANKS, FIXED_PER_BANK) == (40, 15, 20, 20)
+    fixed = [p for p in show.playbacks if p.bank == "Fixed"]
+    assert max(p.slot for p in fixed) >= 300                # records 300..399 are imported too
+    amb = next(p for p in fixed if p.name == "Ambience")
+    assert amb.console_label == "F1/1"
+    pb = next(p for p in show.playbacks if p.bank == "Playback" and p.slot == 1)
+    assert pb.console_label == "P1/2" and pb.console_bank == 1 and pb.console_pos == 2
+    p16 = next(p for p in show.playbacks if p.bank == "Playback" and p.slot == 15)
+    assert p16.console_label == "P2/1"
+    # cue time from the playback header: Ambience fade in 2 s, out fade 5 s
+    assert (amb.steps[0].fade, amb.steps[0].fade_out) == (2.0, 5.0)
+
+
+def test_console_encoder_wheels_match_console(imported):
+    from minidesk import console as K
+    show, _ = imported
+    strobe, beam = show.types["GMS/STROBE 2.5"], show.types["CCMM/CM-280V2@16"]
+
+    def labels(ft, key, page=0):
+        return [K.wheel_label(ft, key, page, w) or "-" for w in range(3)]
+    assert labels(strobe, "Dimmer") == ["Dimmer", "-", "Dimmer BL"]
+    assert labels(strobe, "Colour Mix") == ["Red", "Green", "Blue"]
+    assert labels(strobe, "Colour") == ["-", "Macro", "-"]
+    assert labels(strobe, "Beam") == ["-", "-", "Strobe"]
+    assert labels(strobe, "Effect") == ["-", "Effect RGB", "-"]
+    assert labels(strobe, "Control") == ["-", "FX Speed", "-"]
+    assert labels(beam, "Tilt/Pan") == ["-", "Tilt", "Pan"]
+    assert labels(beam, "Beam") == ["Zoom", "Focus", "-"]
+    assert labels(beam, "Gobo1") == ["-", "Gobo 1", "Frost"]
+    assert labels(beam, "Gobo2") == ["-", "Gobo 2", "Gobo 2 Rot"]
+    assert labels(beam, "Control") == ["-", "X/Y Speed", "Control"]
+    assert labels(beam, "Colour") == ["-", "Color", "Speed"]
+
+
+def test_console_wheels_align_locate_open_full(imported):
+    show, _ = imported
+    e = Engine(show)
+    e.select([19, 22])                       # CM-280 beams
+    e.tick(0.02)
+    e.wheel_move("Tilt/Pan", 0, 1, value=100)          # wheel B = tilt
+    tilt = show.ftype(show.fixture(19)).find("tilt")[0]
+    assert e.programmer[19][tilt] == 100 and e.programmer[22][tilt] == 100
+    e.programmer[22][tilt] = 50
+    e.wheel_move("Tilt/Pan", 0, 1, delta=10)            # relative: keeps the offset
+    assert (e.programmer[19][tilt], e.programmer[22][tilt]) == (110, 60)
+    e.align = True
+    e.wheel_move("Tilt/Pan", 0, 1, delta=5)             # Fixture Align: all the same value
+    assert e.programmer[19][tilt] == e.programmer[22][tilt] == 115
+    e.locate()
+    dim = show.ftype(show.fixture(19)).find("dimmer")[0]
+    assert e.programmer[19][dim] == 255 and e.programmer[19][tilt] == 128
+    e.clear_programmer()
+    e.select([1, 2])
+    e.open_full()
+    assert e.programmer[1][show.ftype(show.fixture(1)).find("dimmer")[0]] == 255
+    base = [1, 2, 3, 4]
+    e.select(base)
+    assert e.even_odd(base) == [1, 3] and e.even_odd(base) == [2, 4] and e.even_odd(base) == base
+
+
+def test_console_effect_library(imported):
+    from minidesk import console_fx as C
+    from minidesk.effects import apply_effect, fixture_phase
+    show, _ = imported
+    assert {c: len(C.LIBRARY[c]) for c in C.CATEGORIES} == {"Intensity": 28, "Position": 107, "Color": 67,
+                                                             "Beam": 31}
+    assert C.LIBRARY["Position"][13] == "TiltSwingG3" and C.LIBRARY["Color"][66] == "RainbowSwap3"
+    fx = [19, 20, 21, 22, 23, 24]
+    e = C.make("Position", 14, fx)                       # TiltSwingG3: groups of 3, spread 120
+    assert (e.type, e.groups, round(C.spread_deg(e))) == ("tilt_wave", 3, 120)
+    assert fixture_phase(e, 19) == fixture_phase(e, 22) != fixture_phase(e, 20)
+    assert C.make("Intensity", 16, fx).duty == 1 / 3     # Dimmer1:2
+    assert C.spread_deg(C.make("Intensity", 13, fx)) == 30   # DimmerPWM2
+    C.set_bpm(e, 15)
+    assert abs(e.speed - 0.25) < 1e-9 and C.bpm(e) == 15
+    C.set_size_pct(e, 40)
+    assert round(C.size_pct(e)) == 40
+    for cat, no, name in C.all_entries():               # every console effect runs on every fixture
+        eff = C.make(cat, no, [f.fid for f in show.fixtures[:30]])
+        for f in show.fixtures[:30]:
+            ft = show.ftype(f)
+            vals = [c.default for c in ft.channels]
+            apply_effect(eff, ft, f.fid, vals, 1.234)
+            assert all(0 <= v <= 255 for v in vals), name
+
+
+def test_cue_snap_overlap_priority_release(imported):
+    show = small_show()
+    spot = show.fixture(3)
+    ft = show.ftype(spot)
+    gobo, dim, pan = ft.find("gobo")[0], ft.find("dimmer")[0], ft.find("pan")[0]
+    pb = Playback("cue", mode="cuelist", steps=[Step(values={3: {gobo: 0, dim: 255, pan: 0}}),
+                                                Step(values={3: {gobo: 100, dim: 255, pan: 200}}, fade=2.0)])
+    show.playbacks.append(pb)
+    e = Engine(show)
+    st = e.state_for(pb)
+    e.go(st)
+    e.tick(0.05)
+    e.go(st)
+    out = e.tick(0.5)
+    base = spot.address - 1
+    assert out[0][base + gobo] == 100              # gobo jumps (snap 0 %) ...
+    assert 0 < out[0][base + pan] < 200            # ... while pan still fades
+    # overlap 0 %: the second fixture starts after the first one
+    pb2 = Playback("ov", mode="cuelist", steps=[Step(values={1: {0: 0}, 2: {0: 0}}),
+                                                Step(values={1: {0: 255}, 2: {0: 255}}, fade=2.0, overlap=0.0)])
+    show.playbacks.append(pb2)
+    e.rebuild_patch()
+    s2 = e.state_for(pb2)
+    e.go(s2)
+    e.tick(0.05)
+    e.go(s2)
+    out = e.tick(0.6)
+    a, b = show.fixture(1).address - 1, show.fixture(2).address - 1
+    assert out[0][a] > 0 and out[0][b] == 0
+    # priority: a high priority playback wins LTP over a later normal one
+    hi = Playback("hi", priority="high", steps=[Step(values={3: {pan: 10}})])
+    lo = Playback("lo", steps=[Step(values={3: {pan: 240}})])
+    show.playbacks += [hi, lo]
+    e.rebuild_patch()
+    e.release_all()
+    e.go(e.state_for(hi))
+    e.go(e.state_for(lo))
+    assert e.tick(0.05)[0][base + pan] == 10
+    # Release Dimmer Only keeps the position on stage after the playback stops
+    e.release_all()
+    keep = Playback("keep", release_mode="dimmer", steps=[Step(values={3: {pan: 77, dim: 255}})])
+    show.playbacks.append(keep)
+    e.rebuild_patch()
+    sk = e.state_for(keep)
+    e.go(sk)
+    e.tick(0.05)
+    e.stop(sk)
+    out = e.tick(0.05)
+    assert out[0][base + pan] == 77 and out[0][base + dim] == 0
+
+
+def test_run_mode_manual_and_use_times():
+    show = small_show()
+    pb = Playback("chase", mode="chase", speed=0.1, run_mode="manual",
+                  steps=[Step(values={1: {0: 10}}), Step(values={1: {0: 200}})])
+    show.playbacks.append(pb)
+    e = Engine(show)
+    st = e.state_for(pb)
+    e.go(st)
+    for _ in range(10):
+        e.tick(0.05)
+    assert st.index == 0                       # manual: no automatic stepping
+    pb.use_times = False
+    pb.steps[1].fade = 5.0
+    e.go(st)
+    assert e.tick(0.05)[0][0] == 200          # delay / fade times ignored -> snap

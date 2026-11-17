@@ -60,6 +60,7 @@ def save(show: Show) -> str:
         "playbacks": {},
         "user_playbacks": [p.to_json() for p in show.playbacks if p.slot < 0],
         "user_presets": [p.to_json() for p in show.presets if p.slot < 0],
+        "user_effects": show.user_effects,
         "console_presets": {str(p.slot): {"category": p.category} for p in show.presets if p.slot >= 0},
         "deleted_presets": [s for s in show.console_info.get("_preset_slots", [])
                             if s not in {p.slot for p in show.presets}],
@@ -68,7 +69,9 @@ def save(show: Show) -> str:
         if p.slot < 0:
             continue
         key = f"{p.bank}:{p.slot}"
-        entry = {"mode": p.mode, "speed": p.speed, "fade": p.fade}
+        entry = {"mode": p.mode, "speed": p.speed, "fade": p.fade, "direction": p.direction, "loop": p.loop,
+                 "xfade": p.xfade, "release": p.release, "release_mode": p.release_mode, "fx_mode": p.fx_mode,
+                 "run_mode": p.run_mode, "priority": p.priority, "use_times": p.use_times}
         if base_hash.get(key) != _steps_hash(p):          # edited in MiniDesk
             entry["base"] = base_hash.get(key)
             entry["steps"] = [s.to_json() for s in p.steps]
@@ -140,6 +143,10 @@ def load(show: Show) -> bool:
         if not e:
             continue
         p.mode, p.speed, p.fade = e.get("mode", p.mode), e.get("speed", p.speed), e.get("fade", p.fade)
+        for k in ("direction", "loop", "xfade", "release", "release_mode", "fx_mode", "run_mode", "priority",
+                  "use_times"):
+            if k in e:
+                setattr(p, k, e[k])
         # only re-apply edited steps if the console's cues did not change since
         if "steps" in e and e.get("base") == base_hash.get(f"{p.bank}:{p.slot}"):
             p.steps = [Step.from_json(s) for s in e["steps"]]
@@ -150,6 +157,7 @@ def load(show: Show) -> bool:
         if str(p.slot) in meta:
             p.category = meta[str(p.slot)].get("category", p.category)
     show.presets += [Preset.from_json(d) for d in data.get("user_presets", [])]
+    show.user_effects = list(data.get("user_effects", show.user_effects))
     num = max((p.number for p in show.playbacks), default=0)
     for d in data.get("user_playbacks", []):
         pb = Playback.from_json(d)

@@ -54,12 +54,26 @@ def fixture_phase(eff: Effect, fid: int) -> float:
     if fid not in eff.fixtures or len(eff.fixtures) < 2:
         return 0.0
     k, per = fixture_index(eff, fid)
+    groups = getattr(eff, "groups", 0)
+    step = getattr(eff, "phase_step", -1.0)
+    if groups and groups > 1:                     # G3, G4 ...: fixtures repeat every N
+        k, per = k % groups, groups
     order = getattr(eff, "order", "forward")
     if eff.reverse:
         order = {"forward": "backward", "backward": "forward", "center_out": "outside_in",
                  "outside_in": "center_out"}.get(order, order)
     if order == "odd_even":
         return 0.5 * (k % 2)
+    if step >= 0:                                 # console "Effect Spread": degrees per fixture
+        if order == "backward":
+            k = per - 1 - k
+        elif order in ("center_out", "outside_in"):
+            mid = (per - 1) / 2
+            d = abs(k - mid)
+            k = d if order == "center_out" else (mid - d)
+        elif order == "random":
+            k = int(_hash01(fid, 7) * per)
+        return (k * step / 360.0) % 1.0
     if order == "random":
         x = _hash01(fid, 7)
     elif order == "backward":
@@ -182,6 +196,12 @@ def shape_xy(kind: str, ph: float, fid: int = 0, t: float = 0.0, speed: float = 
         return 0.0, -abs(math.sin(a))
     if kind == "sweep":
         return tri(ph), 0.5 * math.cos(4 * math.pi * ph)
+    if kind == "zigzag_up":                         # side to side while climbing, then jump back
+        return tri((ph * 4) % 1.0), saw(ph)
+    if kind == "zigzag_down":
+        return tri((ph * 4) % 1.0), -saw(ph)
+    if kind == "xy_step":
+        return (1.0, 1.0) if ph < 0.5 else (-1.0, -1.0)
     if kind == "jump":
         cyc = int(t * speed * 2 + ph * 2)
         return _hash01(fid, cyc) * 2 - 1, _hash01(fid + 991, cyc) * 2 - 1
@@ -205,6 +225,10 @@ def intensity_value(kind: str, ph: float, duty: float, fid: int, t: float, speed
     if kind == "dim_fade":
         x = min(1.0, max(0.0, 1.0 - abs(ph - duty / 2) / max(duty, 0.05) * 2 + 0.5))
         return x * x * (3 - 2 * x)
+    if kind == "dim_soft":                           # slow chase: soft edges around the on part
+        d = max(duty, 0.05)
+        x = ph / d if ph < d else max(0.0, 1.0 - (ph - d) / max(1.0 - d, 0.05))
+        return (1 - math.cos(math.pi * min(1.0, x))) / 2
     if kind == "dim_random":
         return 1.0 if _hash01(fid, int(t * speed)) > 0.5 else 0.0
     if kind == "sparkle":
@@ -262,6 +286,12 @@ def colour_value(eff: Effect, ph: float, fid: int, t: float) -> tuple[int, int, 
         return (255, 0, 0) if ph < 0.5 else (0, 40, 255)
     if eff.type == "pastel":
         return tuple(int(x * 255) for x in colorsys.hsv_to_rgb(ph, 0.4, 1))
+    if eff.type == "rainbow_step":
+        hues = [0.0, 1 / 6, 2 / 6, 3 / 6, 4 / 6, 5 / 6]
+        return tuple(int(x * 255) for x in colorsys.hsv_to_rgb(hues[int(ph * 6) % 6], 1, 1))
+    if eff.type == "rainbow_swap":                   # two opposite hues swapping, slowly rotating
+        base = (t * eff.speed * 0.125) % 1.0
+        return tuple(int(x * 255) for x in colorsys.hsv_to_rgb((base + (0.5 if ph >= 0.5 else 0.0)) % 1.0, 1, 1))
     if eff.type == "color_strobe":
         return (255, 255, 255) if ph < eff.duty * 0.3 else tuple(eff.color_a)
     return tuple(eff.color_a if ph < eff.duty else eff.color_b)
@@ -297,7 +327,76 @@ def _set_colour(ft: FixtureType, vals: list[int], rgb, level: float) -> None:
             vals[i] = int(best * 192 / len(WHEEL_COLOURS)) + 2
 
 
+def _nth_channel(ft: FixtureType, attribute: str) -> int:
+    """Channel index for 'color', 'color2', 'gobo', 'gobo2', 'iris', ... (-1 = none)."""
+    base = attribute.rstrip("0123456789") or attribute
+    n = int(attribute[len(base):] or 1)
+    hits = [i for i, c in enumerate(ft.channels) if c.attr == base]
+    return hits[n - 1] if len(hits) >= n else -1
+
+
+def _slot_values(ch, moving: bool, kind: str) -> list[int]:
+    """Centre values of the wheel slots of a channel (colours / gobos) from its functions."""
+    out = []
+    for lo, hi, lab in ch.functions(moving):
+        l = lab.lower()
+        if any(w in l for w in ("rot", "shake", "scroll", "rainbow", "speed", "cw", "random")):
+            continue
+        if kind == "gobo" and not (l.startswith("gobo") or l.startswith("open")):
+            continue
+        out.append((lo + hi) // 2)
+    if len(out) < 2:                                 # unknown wheel: 8 even slots in the lower half
+        out = [int(8 + k * 120 / 8) for k in range(8)]
+    return out
+
+
+def _wave_value(eff: Effect, ph: float) -> float:
+    w = getattr(eff, "wave", "sine")
+    if w == "linear":
+        return (tri(ph) + 1) / 2
+    if w in ("step", "swap"):
+        return 1.0 if ph < max(0.05, min(0.95, eff.duty)) else 0.0
+    if w == "scroll":
+        return ph
+    return (math.sin(2 * math.pi * ph) + 1) / 2
+
+
+def _attribute_fx(eff: Effect, ft: FixtureType, vals: list[int], ph: float, level: float) -> None:
+    """Console colour wheel / beam effects on one attribute (Color1, Gobo, Iris, Focus, Prism, Frost)."""
+    attr = eff.attribute
+    if not attr:
+        cands = ("color",) if eff.type == "wheel_fx" else ("iris", "focus", "zoom", "frost", "gobo", "prism")
+        attr = next((a for a in cands if _nth_channel(ft, a) >= 0), cands[0])
+    i = _nth_channel(ft, attr)
+    if i < 0:
+        return
+    ch = ft.channels[i]
+    base = attr.rstrip("0123456789")
+    old = vals[i]
+    w = getattr(eff, "wave", "sine")
+    if base in ("color", "gobo"):
+        slots = _slot_values(ch, ft.is_moving, base)
+        if w == "swap":                              # 2 slots alternating
+            a = slots[min(1, len(slots) - 1)]
+            b = slots[min(2, len(slots) - 1)]
+            new = a if ph < 0.5 else b
+        elif w == "scroll":                          # continuous scroll over the wheel range
+            new = slots[0] + (slots[-1] - slots[0]) * ph
+        else:                                        # step through the slots
+            new = slots[int(ph * len(slots)) % len(slots)]
+    elif base == "prism":
+        on = [(lo + hi) // 2 for lo, hi, lab in ch.functions(ft.is_moving)
+              if "on" in lab.lower() and "off" not in lab.lower()]
+        new = (on[0] if on else 128) if _wave_value(eff, ph) >= 0.5 else 0
+    else:                                            # iris / focus / frost / zoom
+        new = eff.low + (eff.high - eff.low) * _wave_value(eff, ph)
+    vals[i] = int(max(0, min(255, old + (new - old) * level)))
+
+
 def _beam(eff: Effect, ft: FixtureType, vals: list[int], ph: float, level: float) -> None:
+    if eff.type == "beam_fx":
+        _attribute_fx(eff, ft, vals, ph, level)
+        return
     moving = ft.is_moving
     a = 2 * math.pi * ph
     target = {"zoom_wave": "zoom", "focus_wave": "focus", "iris_wave": "iris", "frost_wave": "frost",
@@ -361,11 +460,12 @@ def apply_effect(eff: Effect, ft: FixtureType, fid: int, vals: list[int], t: flo
         else:
             dp, dt = shape_xy(eff.type, ph, fid, t, eff.speed)
         dp, dt = dp * eff.size * level, dt * eff.size * level
+        absolute = getattr(eff, "mode", "rel") == "abs"
         for i, c in enumerate(chans):
             if c.attr == "pan":
-                vals[i] = int(max(0, min(255, vals[i] + dp)))
+                vals[i] = int(max(0, min(255, (128 if absolute else vals[i]) + dp)))
             elif c.attr == "tilt":
-                vals[i] = int(max(0, min(255, vals[i] + dt)))
+                vals[i] = int(max(0, min(255, (128 if absolute else vals[i]) + dt)))
         return
     if eff.type in INTENSITY:
         if eff.type in ("bounce", "scanner", "odd_even"):
@@ -379,10 +479,18 @@ def apply_effect(eff: Effect, ft: FixtureType, fid: int, vals: list[int], t: flo
                 v = max(0.0, 1.0 - abs(k - head) / width)
                 if eff.type == "scanner":
                     v = v ** 0.6
+        elif eff.type == "dim_step":                 # one fixture (or group) after the other
+            k, per = fixture_index(eff, fid)
+            if getattr(eff, "groups", 0) > 1:
+                per = eff.groups
+            v = 1.0 if ph < 1.0 / max(per, 1) else 0.0
         else:
             v = intensity_value(eff.type, ph, eff.duty, fid, t, eff.speed)
         out = eff.low + (eff.high - eff.low) * v
         dims = [i for i, c in enumerate(chans) if c.attr == "dimmer"]
+        if dims and getattr(eff, "mode", "") == "rel":    # relative: scale the current level
+            cur = vals[dims[0]]
+            out = cur * (out / 255.0) if cur else 0
         if level < 1.0:        # fade the effect in from the current value
             base = vals[dims[0]] if dims else 0
             out = base + (out - base) * level
@@ -403,6 +511,9 @@ def apply_effect(eff: Effect, ft: FixtureType, fid: int, vals: list[int], t: flo
                     vals[i] = int(out)
         return
     if eff.type in COLOUR:
+        if eff.type == "wheel_fx":
+            _attribute_fx(eff, ft, vals, ph, level)
+            return
         _set_colour(ft, vals, colour_value(eff, ph, fid, t), level)
         return
     if eff.type in BEAM:
